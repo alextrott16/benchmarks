@@ -1,0 +1,102 @@
+# Use this YAML to verify that UL2 pre-training works. Runs on CPU or GPUs (if available).
+# From `benchmarks/ul2`, run: 
+#   `composer main.py yamls/test/main.yaml` to run using the HuggingFace T5
+
+data_remote: &data_remote /Users/atrott/my-copy-c4 # Follow the instructions in the README to set up ./my-copy-c4
+data_local: &data_local /Users/atrott/my-copy-c4
+tokenizer_name: &tokenizer_name t5-small
+max_seq_len: &max_seq_len 128
+mixture_of_denoisers: &mixture_of_denoisers
+  span_mean_lengths_and_ratios: [[3, .15], [12, .15]]
+  sequence_mask_ratios: 0.25
+
+# Run Name
+run_name: test
+
+# Model
+model:
+  name: hf_t5
+  use_pretrained: true # Train the model from scratch. Set to true to start from the HF off-the-shelf weights.
+  pretrained_model_name: *tokenizer_name
+  tokenizer_name: *tokenizer_name
+
+# Dataloaders
+train_loader:
+  name: c4
+  dataset:
+    remote: *data_remote
+    local: *data_local
+    split: val
+    tokenizer_name: *tokenizer_name
+    max_seq_len: *max_seq_len
+    group_method: concat
+    prefetch: 1000
+    shuffle: true
+  mixture_of_denoisers: *mixture_of_denoisers
+  drop_last: true
+  num_workers: 0
+  pin_memory: true
+  prefetch_factor: 2
+  persistent_workers: false
+  timeout: 0
+
+eval_loader:
+  name: c4
+  dataset:
+    remote: *data_remote
+    local: *data_local
+    split: val
+    tokenizer_name: *tokenizer_name
+    max_seq_len: *max_seq_len
+    group_method: concat
+    prefetch: 1000
+    shuffle: false
+  mixture_of_denoisers: *mixture_of_denoisers
+  drop_last: false
+  num_workers: 0
+  pin_memory: true
+  prefetch_factor: 2
+  persistent_workers: false
+  timeout: 0
+
+global_train_batch_size: 4
+
+# Optimization
+scheduler:
+  name: linear_decay_with_warmup
+  t_warmup: 0.06dur # Warmup to the full LR for 6% of the training duration
+  alpha_f: 0.02 # Linearly decay to 0.02x the full LR by the end of the training duration
+
+optimizer:
+  name: decoupled_adamw
+  lr: 2.0e-4
+  betas:
+    - 0.9
+    - 0.95
+  eps: 1.0e-08
+  weight_decay: 0.0
+
+grad_clip_norm: -1.0
+
+# Training duration and evaluation frequency
+max_duration: 10ba
+eval_interval: 10ba
+eval_subset_num_batches: 20 # For code testing, evaluate on a subset of 20 batches
+
+# System
+seed: 17
+grad_accum: 1
+precision: fp32
+
+# Logging
+progress_bar: true
+log_to_console: true
+
+callbacks:
+  speed_monitor:
+    window_size: 500
+  lr_monitor: {}
+  mod_printer:
+    print_frequency: 2
+    max_length: *max_seq_len
+    tokenizer_name: *tokenizer_name
