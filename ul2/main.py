@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import sys
 
 import wandb
 from composer import algorithms
@@ -180,9 +181,7 @@ def main(cfg):
 
 
 if __name__ == '__main__':
-    # yaml_path, args_list = sys.argv[1], sys.argv[2:]
-    yaml_path = '/Users/atrott/benchmarks/ul2/yamls/test/main.yaml'
-    args_list = []
+    yaml_path, args_list = sys.argv[1], sys.argv[2:]
     with open(yaml_path) as f:
         yaml_cfg = om.load(f)
     cli_cfg = om.from_cli(args_list)
