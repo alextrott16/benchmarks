@@ -5,6 +5,7 @@ import os
 import sys
 
 import wandb
+from composer.utils import dist, reproducibility
 from composer import algorithms
 from composer import Trainer
 from composer.callbacks import LRMonitor, MemoryMonitor, SpeedMonitor
@@ -13,11 +14,12 @@ from composer.optim import DecoupledAdamW
 from composer.optim.scheduler import (ConstantWithWarmupScheduler,
                                       CosineAnnealingWithWarmupScheduler,
                                       LinearWithWarmupScheduler)
-from composer.utils import dist, reproducibility
+from transformers import Adafactor
 from omegaconf import OmegaConf as om
 
 from src.data_c4 import build_c4_dataloader
 from src.hf_t5 import create_hf_t5
+from src.inverse_sqrt_scheduler import InverseSquareRootWithWarmupScheduler
 from src.mod_print_callback import MixtureOfDenoisersPrinterCallback
 
 
@@ -54,6 +56,15 @@ def build_optimizer(cfg, model):
             eps=cfg.eps,
             weight_decay=cfg.weight_decay
         )
+    elif cfg.name == 'adafactor':
+        return Adafactor(
+            params=model.parameters(),
+            lr=cfg.lr,
+            weight_decay=cfg.weight_decay,
+            scale_parameter=False,
+            relative_step=False,
+            warmup_init=False
+        )
     else:
         raise ValueError(f'Not sure how to build optimizer: {cfg.name}')
 
@@ -70,6 +81,13 @@ def build_scheduler(cfg):
         return CosineAnnealingWithWarmupScheduler(
             t_warmup=cfg.t_warmup,
             alpha_f=cfg.alpha_f)
+    elif cfg.name == 'inverse_square_root_with_warmup':
+        return InverseSquareRootWithWarmupScheduler(
+            t_warmup=cfg.t_warmup,
+            alpha_max=cfg.alpha_max,
+            scale=cfg.get('scale', 1.0),
+            scale_warmup=cfg.get('scale_warmup', False),
+        )
     else:
         raise ValueError(f'Not sure how to build scheduler: {cfg.name}')
 
@@ -145,7 +163,7 @@ def main(cfg):
         train_dataloader=train_loader,
         eval_dataloader=eval_loader,
         train_subset_num_batches=cfg.get('train_subset_num_batches', -1),
-        eval_subset_num_batches=cfg.get('eval_subset_num_batches', -1),
+        eval_subset_num_batches=cfg.get('eval_subset_num_batches', 1000),
         optimizers=optimizer,
         schedulers=scheduler,
         max_duration=cfg.max_duration,
