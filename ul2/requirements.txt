@@ -1,7 +1,7 @@
 datasets<3
 torch>=1.12
 mosaicml==0.11.1
-mosaicml-streaming<1
+mosaicml-streaming==0.1.2
 omegaconf<3
 transformers<5
 torchmetrics
