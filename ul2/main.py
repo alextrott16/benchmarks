@@ -113,8 +113,8 @@ def main(cfg):
     # Dataloaders
     print("Building train loader...")
     train_loader = build_dataloader(cfg.train_loader, device_train_batch_size)
-    # print("Building eval loader...")
-    # eval_loader = build_dataloader(cfg.eval_loader, device_eval_batch_size)
+    print("Building eval loader...")
+    eval_loader = build_dataloader(cfg.eval_loader, device_eval_batch_size)
 
     # Optimizer
     optimizer = build_optimizer(cfg.optimizer, model)
@@ -143,13 +143,13 @@ def main(cfg):
         model=model,
         algorithms=algorithms,
         train_dataloader=train_loader,
-        # eval_dataloader=eval_loader,
+        eval_dataloader=eval_loader,
         train_subset_num_batches=cfg.get('train_subset_num_batches', -1),
-        # eval_subset_num_batches=cfg.get('eval_subset_num_batches', -1),
+        eval_subset_num_batches=cfg.get('eval_subset_num_batches', -1),
         optimizers=optimizer,
         schedulers=scheduler,
         max_duration=cfg.max_duration,
-        # eval_interval=cfg.eval_interval,
+        eval_interval=cfg.eval_interval,
         progress_bar=cfg.progress_bar,
         log_to_console=cfg.log_to_console,
         loggers=loggers,
