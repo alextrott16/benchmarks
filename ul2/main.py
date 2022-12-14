@@ -97,7 +97,8 @@ def build_model(cfg):
             pretrained_model_name=cfg.pretrained_model_name,
             use_pretrained=cfg.get('use_pretrained', None),
             model_config=cfg.get('model_config', None),
-            tokenizer_name=cfg.get('tokenizer_name', None)
+            tokenizer_name=cfg.get('tokenizer_name', None),
+            z_loss=cfg.get('z_loss', 0.0),
         )
     else:
         raise ValueError(f'Not sure how to build model with name={cfg.name}')
