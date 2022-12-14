@@ -304,6 +304,11 @@ class MixtureOfDenoisersCollator:
             noiser_fcn, noiser_kwargs = random.choice(self._noisers)
             processed_examples.append(noiser_fcn(example, **noiser_kwargs))
         batch = self.tokenizer.pad(processed_examples)
+        # Truncate portions of the encoder inputs that are purely padding
+        n_examples_per_length = batch['attention_mask'].sum(0)
+        keep_tokens = n_examples_per_length > 0
+        batch['input_ids'] = batch['input_ids'][:, keep_tokens]
+        batch['attention_mask'] = batch['attention_mask'][:, keep_tokens]
         # Truncate portions of the decoder inputs that are purely padding
         n_examples_per_length = batch['decoder_attention_mask'].sum(0)
         keep_tokens = n_examples_per_length > 0
