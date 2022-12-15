@@ -19,7 +19,7 @@ from omegaconf import OmegaConf as om
 
 from src.data_c4 import build_c4_dataloader
 from src.hf_t5 import create_hf_t5
-from src.inverse_sqrt_scheduler import InverseSquareRootWithWarmupScheduler
+from src.inverse_sqrt_scheduler import InverseSquareRootScheduler
 from src.mod_print_callback import MixtureOfDenoisersPrinterCallback
 
 
@@ -59,10 +59,10 @@ def build_optimizer(cfg, model):
     elif cfg.name == 'adafactor':
         return Adafactor(
             params=model.parameters(),
-            lr=cfg.lr,
-            weight_decay=cfg.weight_decay,
+            lr=cfg.get('lr', 1.0), # Recommend using InverseSquareRootScheduler with default settings when using these defaults
+            weight_decay=cfg.get('weight_decay', 0.0),
             beta1=cfg.get('beta1', None),
-            scale_parameter=cfg.get('scale_parameter', False),
+            scale_parameter=cfg.get('scale_parameter', True),
             relative_step=cfg.get('relative_step', False),
             warmup_init=cfg.get('warmup_init', False)
         )
@@ -82,12 +82,10 @@ def build_scheduler(cfg):
         return CosineAnnealingWithWarmupScheduler(
             t_warmup=cfg.t_warmup,
             alpha_f=cfg.alpha_f)
-    elif cfg.name == 'inverse_square_root_with_warmup':
-        return InverseSquareRootWithWarmupScheduler(
-            t_warmup=cfg.t_warmup,
+    elif cfg.name == 'inverse_square_root':
+        return InverseSquareRootScheduler(
             alpha_max=cfg.alpha_max,
             scale=cfg.get('scale', 1.0),
-            scale_warmup=cfg.get('scale_warmup', False),
         )
     else:
         raise ValueError(f'Not sure how to build scheduler: {cfg.name}')
