@@ -61,6 +61,7 @@ def build_optimizer(cfg, model):
             params=model.parameters(),
             lr=cfg.lr,
             weight_decay=cfg.weight_decay,
+            beta1=cfg.get('beta1', None),
             scale_parameter=False,
             relative_step=False,
             warmup_init=False
