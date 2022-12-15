@@ -62,9 +62,9 @@ def build_optimizer(cfg, model):
             lr=cfg.lr,
             weight_decay=cfg.weight_decay,
             beta1=cfg.get('beta1', None),
-            scale_parameter=False,
-            relative_step=False,
-            warmup_init=False
+            scale_parameter=cfg.get('scale_parameter', False),
+            relative_step=cfg.get('relative_step', False),
+            warmup_init=cfg.get('warmup_init', False)
         )
     else:
         raise ValueError(f'Not sure how to build optimizer: {cfg.name}')
