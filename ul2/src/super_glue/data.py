@@ -5,8 +5,11 @@ import transformers
 import logging
 import torch
 
-from typing import Mapping, Any, Optional, List
+from typing import Mapping, Any, Optional, List, cast
 from composer.utils import dist
+from composer.core.evaluator import Evaluator
+from composer.core.types import Dataset
+from omegaconf.listconfig import ListConfig
 from torch.utils.data import DataLoader
 from torchmetrics import Metric
 
@@ -130,14 +133,8 @@ def create_super_glue_dataset(
     )
     return dataset
 
-def build_super_glue_task_dataloader(cfg: Mapping[str, Any], device_batch_size: int):
-
-    assert cfg.name == 'super_glue', f'Tried to build super_glue dataloader with cfg.name={cfg.name}'
-    dataset = create_super_glue_dataset(cfg.dataset.task, 
-                                        cfg.dataset.tokenizer_name,
-                                        cfg.dataset.split,
-                                        cfg.dataset.max_seq_length,
-                                        extra_prefix=cfg.dataset.get('extra_prefix', None))
+def _build_dataloader(dataset, cfg, device_batch_size):
+    dataset = cast(Dataset, dataset)
 
     return DataLoader(
         dataset,
@@ -150,6 +147,59 @@ def build_super_glue_task_dataloader(cfg: Mapping[str, Any], device_batch_size: 
         persistent_workers=cfg.persistent_workers,
         timeout=cfg.timeout,
     )
+
+def build_super_glue_task_dataloader(cfg: Mapping[str, Any], device_batch_size: int, mode: Optional[str] = None):
+
+    assert cfg.name == 'super_glue', f'Tried to build super_glue dataloader with cfg.name={cfg.name}'
+    
+    # One task
+    if isinstance(cfg.dataset.task, str):
+        dataset = create_super_glue_dataset(cfg.dataset.task, 
+                                            cfg.dataset.tokenizer_name,
+                                            cfg.dataset.split,
+                                            cfg.dataset.max_seq_length,
+                                            extra_prefix=cfg.dataset.get('extra_prefix', None))
+        return _build_dataloader(dataset, cfg, device_batch_size)
+    
+    # Task mixture
+    elif isinstance(cfg.dataset.task, (list, tuple, ListConfig)):
+        tasks = [task.lower() for task in cfg.dataset.task]
+        assert 'multirc' not in tasks, "Task multirc is not currently supported in task mixtures"
+        assert 'record' not in tasks, "Task record is not currently supported in task mixtures"
+
+        if mode not in ['train', 'eval']:
+            raise ValueError('When using multiple tasks, argument `mode` must be set to either `train` or `eval`.')
+
+        super_glue_datasets = [
+            create_super_glue_dataset(task, 
+                                      cfg.dataset.tokenizer_name,
+                                      cfg.dataset.split,
+                                      cfg.dataset.max_seq_length,
+                                      extra_prefix=cfg.dataset.get('extra_prefix', None))
+            for task in tasks
+        ]
+
+        # Merge these task datasets into one dataset, sampling from each with 
+        if mode == 'train':
+            d_lengths = [len(dset) for dset in super_glue_datasets]
+            probs = [d_length/sum(d_lengths) for d_length in d_lengths]
+            dataset = datasets.interleave_datasets(super_glue_datasets, probabilities=probs, seed=42, stopping_strategy="all_exhausted")
+            return _build_dataloader(dataset, cfg, device_batch_size)
+
+        # Create a list of evaluators, with one evaluator per task
+        else:
+            assert mode == 'eval'
+            evaluators = []
+            for task, dataset in zip(tasks, super_glue_datasets):
+                evaluator = Evaluator(label=task,
+                                      dataloader=_build_dataloader(dataset, cfg, device_batch_size),
+                                      metric_names=['ExactMatch'])
+                evaluators.append(evaluator)
+            return evaluators
+
+    else:
+        raise ValueError(f'Unrecognized type: {cfg.dataset.task}, with type {type(cfg.dataset.task)}')
+
 
 class ExactMatch(Metric):
     is_differentiable = False

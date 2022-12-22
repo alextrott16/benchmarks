@@ -104,11 +104,11 @@ def build_model(cfg):
     else:
         raise ValueError(f'Not sure how to build model with name={cfg.name}')
 
-def build_dataloader(cfg, device_batch_size):
+def build_dataloader(cfg, device_batch_size, mode):
     if cfg.name == 'c4':
         return build_c4_dataloader(cfg, device_batch_size)
     elif cfg.name == 'super_glue':
-        return build_super_glue_task_dataloader(cfg, device_batch_size)
+        return build_super_glue_task_dataloader(cfg, device_batch_size, mode)
     else:
         raise ValueError(f'Not sure how to build dataloader with name={cfg.name}')
 
@@ -134,9 +134,9 @@ def main(cfg):
 
     # Dataloaders
     print("Building train loader...")
-    train_loader = build_dataloader(cfg.train_loader, device_train_batch_size)
+    train_loader = build_dataloader(cfg.train_loader, device_train_batch_size, mode='train')
     print("Building eval loader...")
-    eval_loader = build_dataloader(cfg.eval_loader, device_eval_batch_size)
+    eval_loader = build_dataloader(cfg.eval_loader, device_eval_batch_size, mode='eval')
 
     # Optimizer
     optimizer = build_optimizer(cfg.optimizer, model)
