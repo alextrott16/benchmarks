@@ -41,6 +41,7 @@ def create_super_glue_dataset(
     max_seq_length: int = 256,
     max_retries: int = 10,
     num_workers: int = 0,
+    extra_prefix: Optional[str] = None,
 ):
     if task not in _task_prefix_column_names:
         raise ValueError(f'task ({task}) must be one of {_task_prefix_column_names.keys()}')
@@ -80,7 +81,11 @@ def create_super_glue_dataset(
 
     def tokenize_function(inp: Mapping[str, Any]):
         # truncates sentences to max_length or pads them to max_length
-        text = [task]
+        if extra_prefix is not None:
+            prefix = f'{extra_prefix} {task}'
+        else:
+            prefix = task
+        text = [prefix]
         for prefix_column in prefix_column_order:
             text.append(f'{prefix_column}: {inp[prefix_column]}')
         encoder_text = '\n'.join(text)
@@ -131,7 +136,8 @@ def build_super_glue_task_dataloader(cfg: Mapping[str, Any], device_batch_size: 
     dataset = create_super_glue_dataset(cfg.dataset.task, 
                                         cfg.dataset.tokenizer_name,
                                         cfg.dataset.split,
-                                        cfg.dataset.max_seq_length)
+                                        cfg.dataset.max_seq_length,
+                                        cfg.dataset.get('extra_prefix', None))
 
     return DataLoader(
         dataset,
