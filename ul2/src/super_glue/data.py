@@ -137,7 +137,7 @@ def build_super_glue_task_dataloader(cfg: Mapping[str, Any], device_batch_size: 
                                         cfg.dataset.tokenizer_name,
                                         cfg.dataset.split,
                                         cfg.dataset.max_seq_length,
-                                        cfg.dataset.get('extra_prefix', None))
+                                        extra_prefix=cfg.dataset.get('extra_prefix', None))
 
     return DataLoader(
         dataset,
