@@ -21,6 +21,7 @@ from src.data_c4 import build_c4_dataloader
 from src.hf_t5 import create_hf_t5
 from src.inverse_sqrt_scheduler import InverseSquareRootScheduler
 from src.mod_print_callback import MixtureOfDenoisersPrinterCallback
+from src.super_glue.data import build_super_glue_task_dataloader
 
 
 def build_logger(name, kwargs):
@@ -98,6 +99,7 @@ def build_model(cfg):
             model_config=cfg.get('model_config', None),
             tokenizer_name=cfg.get('tokenizer_name', None),
             z_loss=cfg.get('z_loss', 0.0),
+            task_finetuning=cfg.get('task_finetuning', False),
         )
     else:
         raise ValueError(f'Not sure how to build model with name={cfg.name}')
@@ -105,8 +107,10 @@ def build_model(cfg):
 def build_dataloader(cfg, device_batch_size):
     if cfg.name == 'c4':
         return build_c4_dataloader(cfg, device_batch_size)
+    elif cfg.name == 'super_glue':
+        return build_super_glue_task_dataloader(cfg, device_batch_size)
     else:
-        raise ValueError(f'Not sure how to build model with name={cfg.name}')
+        raise ValueError(f'Not sure how to build dataloader with name={cfg.name}')
 
 
 def main(cfg):

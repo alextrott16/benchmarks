@@ -12,6 +12,7 @@ from typing import Optional
 from composer.metrics.nlp import LanguageCrossEntropy, MaskedAccuracy
 from composer.models.huggingface import HuggingFaceModel
 from composer.utils.import_helpers import MissingConditionalImportError
+from src.super_glue.data import ExactMatch
 
 
 # from torchmetrics import MeanSquaredError
@@ -55,7 +56,8 @@ def create_hf_t5(pretrained_model_name: str = 't5-base',
                  use_pretrained: Optional[bool] = False,
                  model_config: Optional[dict] = None,
                  tokenizer_name: Optional[str] = None,
-                 z_loss: float = 0.0):
+                 z_loss: float = 0.0,
+                 task_finetuning: Optional[bool] = False):
     """T5 model based on |:hugging_face:| Transformers.
 
     For more information, see `Transformers <https://huggingface.co/transformers/>`_.
@@ -105,5 +107,7 @@ def create_hf_t5(pretrained_model_name: str = 't5-base',
         LanguageCrossEntropy(ignore_index=-100, vocab_size=len(tokenizer)), # Note: The HF code is hardcoded to use -100 as the ignore index
         MaskedAccuracy(ignore_index=-100)
     ]
+    if task_finetuning:
+        metrics.append(ExactMatch(ignore_index=-100))
     return HuggingFaceModelWithZLoss(model=model, tokenizer=tokenizer, metrics=metrics, z_loss=z_loss)
 

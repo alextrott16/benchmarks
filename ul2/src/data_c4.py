@@ -151,9 +151,9 @@ class MixtureOfDenoisersCollator:
         self.max_seq_length = max_seq_length
 
         self._denoiser_tags = [
-            '[R]', # "Regular" span corruption
-            '[X]', # "Extreme" span corruption
-            '[S]', # Sequential denoising
+            '[NLU]', # "Regular" span corruption
+            '[NLG]', # "Extreme" span corruption
+            '[S2S]', # Sequential denoising
         ]
         self._denoiser_tag_token_ids = {} # To be appended to `input_ids` when corrupting
         for tag in self._denoiser_tags:
@@ -215,9 +215,9 @@ class MixtureOfDenoisersCollator:
 
         length = len(tokens)
         if mean_span_length >= 12 or mask_ratio >= 0.3:
-            tag = '[X]' # UL2 considers this corruption rate "extreme" and tags it accordingly
+            tag = '[NLG]' # UL2 considers this corruption rate "extreme" and tags it accordingly
         else:
-            tag = '[R]' # UL2 considers this corruption rate "regular" and tags it accordingly
+            tag = '[NLU]' # UL2 considers this corruption rate "regular" and tags it accordingly
         tag_token_ids = self._denoiser_tag_token_ids[tag]
         
         mask_hit = False
@@ -283,7 +283,7 @@ class MixtureOfDenoisersCollator:
         example['decoder_attention_mask'] = torch.zeros_like(example['labels'])
         
         length = len(tokens)
-        tag_tokens = self._denoiser_tag_token_ids['[S]']
+        tag_tokens = self._denoiser_tag_token_ids['[S2S]']
         label_token_length = int(np.round(np.random.uniform(low=1+len(tag_tokens), high=int(length*2*mask_ratio))))
         input_token_length = length - label_token_length
         

@@ -32,7 +32,7 @@ train_loader:
     tokenizer_name: *tokenizer_name
     max_seq_len: *max_seq_len
     group_method: concat
-    prefetch: 1000
+    prefetch: 1_000_000
     shuffle: true
   mixture_of_denoisers: *mixture_of_denoisers
   drop_last: true
@@ -65,18 +65,14 @@ global_train_batch_size: 128
 
 # Optimization
 scheduler:
-  name: linear_decay_with_warmup # UL2 paper calls for inverse square root scheduler
-  t_warmup: 0.06dur # Warmup to the full LR for 6% of the training duration
-  alpha_f: 0.02 # Linearly decay to 0.02x the full LR by the end of the training duration
+    name: inverse_square_root # UL2 paper calls for inverse square root scheduler
+    alpha_max: 0.01 
 
 optimizer:
-  name: decoupled_adamw # UL2 paper calls for Adafactor w/ unknown HPs
-  lr: 5.0e-4 # Peak learning rate
-  betas:
-    - 0.9
-    - 0.98
-  eps: 1.0e-06
-  weight_decay: 1.0e-5 # Amount of weight decay regularization
+  name: adafactor # UL2 paper calls for Adafactor w/ unknown HPs
+  lr: 1.0 # Actual LR determined by scheduler
+  weight_decay: 0.0 # Amount of weight decay regularization
+  scale_parameter: true
 
 grad_clip_norm: -1.0
 
@@ -85,9 +81,9 @@ max_duration: 500000ba
 eval_interval: 1000ba
 
 # Checkpoint to local filesystem or remote object store
-save_interval: 10000ba
+save_interval: 50000ba
 save_num_checkpoints_to_keep: 1  # Important, this cleans up checkpoints saved to DISK
-save_folder: null # e.g. './{run_name}/ckpt' (local) or 's3://mybucket/mydir/{run_name}/ckpt' (remote)
+save_folder: # e.g. './{run_name}/ckpt' (local) or 's3://mybucket/mydir/{run_name}/ckpt' (remote)
 
 # System
 seed: 17
@@ -106,6 +102,6 @@ callbacks:
     window_size: 500
   lr_monitor: {}
   mod_printer:
-    print_frequency: 100
+    print_frequency: 1000
     max_length: *max_seq_len
     tokenizer_name: *tokenizer_name

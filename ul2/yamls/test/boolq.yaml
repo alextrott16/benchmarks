@@ -1,14 +1,9 @@
-# Use this YAML to verify that UL2 pre-training works. Runs on CPU or GPUs (if available).
+# Use this YAML to verify that boolq (a SuperGLUE task) fine-tuning works. Runs on CPU or GPUs (if available).
 # From `benchmarks/ul2`, run: 
-#   `composer main.py yamls/test/main.yaml` to run using the HuggingFace T5
+#   `composer main.py yamls/test/boolq.yaml` to run using the HuggingFace T5
 
-data_remote: &data_remote /Users/atrott/my-copy-c4 # Follow the instructions in the README to set up ./my-copy-c4
-data_local: &data_local /Users/atrott/my-copy-c4
 tokenizer_name: &tokenizer_name t5-small
 max_seq_len: &max_seq_len 128
-mixture_of_denoisers: &mixture_of_denoisers
-  span_mean_lengths_and_ratios: [[3, .15], [12, .15]]
-  sequence_mask_ratios: 0.25
 
 # Run Name
 run_name: test
@@ -20,20 +15,17 @@ model:
   pretrained_model_name: *tokenizer_name
   tokenizer_name: *tokenizer_name
   z_loss: 0.0001
+  task_finetuning: true
 
 # Dataloaders
 train_loader:
-  name: c4
+  name: super_glue
   dataset:
-    remote: *data_remote
-    local: *data_local
-    split: val
+    task: boolq
+    split: train
     tokenizer_name: *tokenizer_name
-    max_seq_len: *max_seq_len
-    group_method: concat
-    prefetch: 1000
-    shuffle: true
-  mixture_of_denoisers: *mixture_of_denoisers
+    max_seq_length: *max_seq_len
+  shuffle: true
   drop_last: true
   num_workers: 0
   pin_memory: true
@@ -42,18 +34,14 @@ train_loader:
   timeout: 0
 
 eval_loader:
-  name: c4
+  name: super_glue
   dataset:
-    remote: *data_remote
-    local: *data_local
-    split: val
+    task: boolq
+    split: validation
     tokenizer_name: *tokenizer_name
-    max_seq_len: *max_seq_len
-    group_method: concat
-    prefetch: 1000
-    shuffle: false
-  mixture_of_denoisers: *mixture_of_denoisers
-  drop_last: false
+    max_seq_length: *max_seq_len
+  shuffle: true
+  drop_last: true
   num_workers: 0
   pin_memory: true
   prefetch_factor: 2
@@ -64,14 +52,14 @@ global_train_batch_size: 4
 
 # Optimization
 scheduler:
-    name: inverse_square_root # UL2 paper calls for inverse square root scheduler
-    alpha_max: 0.01 
+  name: constant_with_warmup # UL2 paper calls for constant LR when fine-tuning
+  t_warmup: 10ba
 
 optimizer:
   name: adafactor # UL2 paper calls for Adafactor w/ unknown HPs
-  lr: 1.0 # Actual LR determined by scheduler
+  lr: 0.0001 # Actual LR determined by scheduler
   weight_decay: 0.0 # Amount of weight decay regularization
-  scale_parameter: true
+  scale_parameter: false
 
 grad_clip_norm: -1.0
 
@@ -93,7 +81,3 @@ callbacks:
   speed_monitor:
     window_size: 500
   lr_monitor: {}
-  mod_printer:
-    print_frequency: 2
-    max_length: *max_seq_len
-    tokenizer_name: *tokenizer_name
