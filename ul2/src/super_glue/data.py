@@ -164,8 +164,8 @@ def build_super_glue_task_dataloader(cfg: Mapping[str, Any], device_batch_size: 
     # Task mixture
     elif isinstance(cfg.dataset.task, (list, tuple, ListConfig)):
         tasks = [task.lower() for task in cfg.dataset.task]
-        assert 'multirc' not in tasks, "Task multirc is not currently supported in task mixtures"
-        assert 'record' not in tasks, "Task record is not currently supported in task mixtures"
+        # assert 'multirc' not in tasks, "Task multirc is not currently supported in task mixtures"
+        # assert 'record' not in tasks, "Task record is not currently supported in task mixtures"
 
         if mode not in ['train', 'eval']:
             raise ValueError('When using multiple tasks, argument `mode` must be set to either `train` or `eval`.')
