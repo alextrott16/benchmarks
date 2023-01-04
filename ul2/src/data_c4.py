@@ -176,9 +176,17 @@ class MixtureOfDenoisersCollator:
             assert 0 < span_mask_ratio < 1.0, "All span masking ratios must be between 0.0 and 1.0."
             
             # This mean_length / mask_ratio combo becomes one of the span corruption denoising tasks
+            # noiser = (
+            #     self.span_corrupt_token_sequence,
+            #     dict(mean_span_length=span_mean_length, mask_ratio=span_mask_ratio)
+            # )
+            if span_mean_length >= 12 or span_mask_ratio >= 0.3:
+                prefix = '[NLG]' # UL2 considers this corruption rate "extreme" and tags it accordingly
+            else:
+                prefix = '[NLU]' # UL2 considers this corruption rate "regular" and tags it accordingly
             noiser = (
-                self.span_corrupt_token_sequence,
-                dict(mean_span_length=span_mean_length, mask_ratio=span_mask_ratio)
+                self.noise_token_sequence,
+                dict(mean_span_length=span_mean_length, mask_ratio=span_mask_ratio, prefix=prefix)
             )
             self._noisers.append(noiser)
 
@@ -192,9 +200,13 @@ class MixtureOfDenoisersCollator:
             assert 0 < sequence_mask_ratio < 0.5, "All sequence masking ratios must be between 0.0 and 0.5."
 
             # This mask_ratio becomes one of the sequential denoising tasks
+            # noiser = (
+            #     self.sequence_corrupt_token_sequence,
+            #     dict(mask_ratio=sequence_mask_ratio)
+            # )
             noiser = (
-                self.sequence_corrupt_token_sequence,
-                dict(mask_ratio=sequence_mask_ratio)
+                self.noise_token_sequence,
+                dict(mean_span_length=None, mask_ratio=span_mask_ratio, prefix='[S2S]')
             )
             self._noisers.append(noiser)
 
@@ -202,62 +214,96 @@ class MixtureOfDenoisersCollator:
             raise ValueError("No denoising tasks were included. Make sure to set `span_mean_lengths_and_ratios` and/or `sequence_mask_ratios`.")
         
         self.sentinel_tokens = tokenizer.additional_special_tokens_ids
-        # self.sentinel_tokens = torch.LongTensor(tokenizer.additional_special_tokens_ids)
 
-    def span_corrupt_token_sequence(self, example: Mapping[str, Any], mean_span_length: float, mask_ratio: float):
-        tokens = example['input_ids']
+    @staticmethod
+    def _sample_mask_array(length: int, mask_ratio: float, mean_span_length: float):
+        if mask_ratio == 0.0:
+            return np.zeros(length)
+        # This first block computes the number of noise/non-noise spans and the total tokens in each.
+        # Extra steps are taken to handle edge cases that cause degeneracy.
+        starting_length = length
+        length = np.maximum(length, 2)
+        num_noise_tokens = int(np.round(mask_ratio * float(length)))
+        num_noise_tokens = np.minimum(np.maximum(num_noise_tokens, 1), length - 1)
+        num_spans = int(np.round(float(num_noise_tokens) / mean_span_length))
+        num_noise_spans = np.maximum(num_spans, 1)
+        num_nonnoise_tokens = length - num_noise_tokens
+
+        # Sample the noise/non-noise span lengths and interleave them to generate the mask array.
+        # Note: We always start with a non-noise span.
+        def _sample_span_lengths(total_tokens, num_spans):
+            """Samples lengths of num_spans segments, the combined length of which equals total_tokens"""
+            span_markers = np.less(np.arange(total_tokens - 1), num_spans - 1)[np.random.permutation(total_tokens - 1)]
+            span_start_indicator = np.concatenate([[0], span_markers])
+            span_id = np.cumsum(span_start_indicator).reshape(-1, 1)
+            spans = np.arange(num_spans).reshape(1, -1)
+            span_lengths = np.sum(span_id == spans, axis=0)
+            return span_lengths
+
+        noise_span_lengths = _sample_span_lengths(num_noise_tokens, num_noise_spans)
+        nonnoise_span_lengths = _sample_span_lengths(num_nonnoise_tokens, num_noise_spans)
+        interleaved_span_lengths = np.reshape(
+            np.stack([nonnoise_span_lengths, noise_span_lengths], axis=1),
+            [num_noise_spans * 2])
         
+        span_starts = np.cumsum(interleaved_span_lengths)[:-1]
+        span_start_indicator = np.zeros(length)
+        span_start_indicator[span_starts] = 1
+        span_id = np.cumsum(span_start_indicator)
+        is_noise = np.equal(np.mod(span_id, 2), 1)
+
+        mask = is_noise[:starting_length]
+
+        return mask
+
+    def noise_token_sequence(self, example: Mapping[str, Any], mask_ratio: float, mean_span_length: Optional[float], prefix: Optional[str]):
+        """Span corruption applicable to all UL2 denoising tasks
+        """
+        # Extract the raw text tokens
+        length = sum(example['attention_mask'])
+        tokens = example['input_ids'][:length]
+
+        # mean_span_length==None is a special case for "sequential" denoising (where a single span at the end of the sequence is masked)
+        if mean_span_length is None:
+            mean_span_length = np.round(np.random.uniform(low=1, high=np.minimum(length-1, 2*mask_ratio*length)))
+            mask_ratio = mean_span_length / length # This ensures that exactly 1 span will be produced
+
+        # Generate the mask
+        mask = self._sample_mask_array(length, mask_ratio, mean_span_length) # This function can be used for all the UL2 noising functions
+        assert mask[0] == 0 # The sequence should always be unmasked at the beginning
+
+        # Generate the input/label sequences given the raw tokens and the mask (prefix tagging happens after this)
+        span_index = 0
+        idx_inputs = []
+        idx_labels = []
+        last_mask = 0
+        for token_mask, token in zip(mask, tokens):
+            if token_mask == 0: # This token goes into the inputs
+                idx_inputs.append(token)
+
+            else: # This token goes into the labels
+                if token_mask == 1 and last_mask == 0:
+                    # Switching from non-noise to noise adds a sentinel token to both inputs and targets
+                    idx_inputs.append(self.sentinel_tokens[span_index])
+                    idx_labels.append(self.sentinel_tokens[span_index])
+                    span_index = min(span_index + 1, len(self.sentinel_tokens) - 1)
+                idx_labels.append(token)
+            
+            last_mask = token_mask
+
+        # Tag the inputs with any prefix, if appropriate
+        if prefix is not None:
+            if prefix not in self._denoiser_tag_token_ids:
+                raise KeyError(f"Prefix {prefix} is not valid. Must be one of: {', '.join(self._denoiser_tag_token_ids.keys())}")
+            idx_inputs = self._denoiser_tag_token_ids[prefix] + idx_inputs
+
         # Re-populate with an empty, padded example
         example['input_ids'] = torch.full((self.max_seq_length,), self.tokenizer.pad_token_id) 
         example['labels']    = torch.full((self.max_seq_length,), -100) # Note: The HF code is hardcoded to use -100 as the ignore index
         example['attention_mask'] = torch.zeros_like(example['input_ids'])
         example['decoder_attention_mask'] = torch.zeros_like(example['labels'])
 
-        length = len(tokens)
-        if mean_span_length >= 12 or mask_ratio >= 0.3:
-            tag = '[NLG]' # UL2 considers this corruption rate "extreme" and tags it accordingly
-        else:
-            tag = '[NLU]' # UL2 considers this corruption rate "regular" and tags it accordingly
-        tag_token_ids = self._denoiser_tag_token_ids[tag]
-        
-        mask_hit = False
-        while not mask_hit: # Better to do this multiple times than waste a sample by not corrupting anything
-            span_index = 0
-            idx_inputs = []
-            idx_labels = []
-            idx = 0
-            # The below procedure implicitly breaks the token sequence into spans and then masks them with a probability of `mask_ratio`
-            idx_inputs += tag_token_ids
-            while idx < length:
-                span = int(np.maximum(2.0, np.round(np.random.normal(mean_span_length, 1))))
-                # Begin a masked new span
-                if np.random.rand() <= mask_ratio:
-                    mask_hit = True
-                    # Mark the span
-                    idx_inputs += [self.sentinel_tokens[span_index]]
-                    idx_labels += [self.sentinel_tokens[span_index]]
-                    span_index = min(span_index + 1, len(self.sentinel_tokens) - 1)
-                    
-                    # Add the tokens to the labels
-                    idx_end = min(idx + span, length)
-                    idx_labels += tokens[idx:idx_end]
-                    idx = idx_end
-                    
-                    # Don't allow the next token to be part of a masked span
-                    if idx < length:
-                        idx_inputs += [tokens[idx]]
-                        idx = idx + 1
-                    
-                # Begin a new unmasked span
-                else:
-                    # Add the tokens to the inputs
-                    idx_end = min(idx + span, length)
-                    idx_inputs += tokens[idx:idx_end]
-                    idx = idx_end
-            idx_labels += [self.sentinel_tokens[span_index]]
-                    
-            assert idx == length
-
+        # Fill in with the processed results
         tokens_inputs = torch.LongTensor(idx_inputs)
         tokens_labels = torch.LongTensor(idx_labels)
 
@@ -270,32 +316,101 @@ class MixtureOfDenoisersCollator:
         example['labels'][:len(tokens_labels)] = tokens_labels
         example['attention_mask'][:len(tokens_inputs)] = 1
         example['decoder_attention_mask'][:len(tokens_labels)] = 1
-        
+
         return example
 
-    def sequence_corrupt_token_sequence(self, example: Mapping[str, Any], mask_ratio: float):
-        tokens = example['input_ids']
+    # def span_corrupt_token_sequence(self, example: Mapping[str, Any], mean_span_length: float, mask_ratio: float):
+    #     tokens = example['input_ids']
         
-        # Re-populate with an empty, padded example
-        example['input_ids'] = torch.full((self.max_seq_length,), self.tokenizer.pad_token_id)
-        example['labels']    = torch.full((self.max_seq_length,), -100) # Note: The HF code is hardcoded to use -100 as the ignore index
-        example['attention_mask'] = torch.zeros_like(example['input_ids'])
-        example['decoder_attention_mask'] = torch.zeros_like(example['labels'])
-        
-        length = len(tokens)
-        tag_tokens = self._denoiser_tag_token_ids['[S2S]']
-        label_token_length = int(np.round(np.random.uniform(low=1+len(tag_tokens), high=int(length*2*mask_ratio))))
-        input_token_length = length - label_token_length
-        
-        tokens_inputs = torch.LongTensor(tag_tokens + tokens[:input_token_length] + self.sentinel_tokens[:1])
-        tokens_labels = torch.LongTensor(self.sentinel_tokens[:1] + tokens[input_token_length:])
+    #     # Re-populate with an empty, padded example
+    #     example['input_ids'] = torch.full((self.max_seq_length,), self.tokenizer.pad_token_id) 
+    #     example['labels']    = torch.full((self.max_seq_length,), -100) # Note: The HF code is hardcoded to use -100 as the ignore index
+    #     example['attention_mask'] = torch.zeros_like(example['input_ids'])
+    #     example['decoder_attention_mask'] = torch.zeros_like(example['labels'])
 
-        example['input_ids'][:len(tokens_inputs)] = tokens_inputs
-        example['labels'][:len(tokens_labels)] = tokens_labels
-        example['attention_mask'][:len(tokens_inputs)] = 1
-        example['decoder_attention_mask'][:len(tokens_labels)] = 1
+    #     length = len(tokens)
+    #     if mean_span_length >= 12 or mask_ratio >= 0.3:
+    #         tag = '[NLG]' # UL2 considers this corruption rate "extreme" and tags it accordingly
+    #     else:
+    #         tag = '[NLU]' # UL2 considers this corruption rate "regular" and tags it accordingly
+    #     tag_token_ids = self._denoiser_tag_token_ids[tag]
         
-        return example
+    #     mask_hit = False
+    #     while not mask_hit: # Better to do this multiple times than waste a sample by not corrupting anything
+    #         span_index = 0
+    #         idx_inputs = []
+    #         idx_labels = []
+    #         idx = 0
+    #         # The below procedure implicitly breaks the token sequence into spans and then masks them with a probability of `mask_ratio`
+    #         idx_inputs += tag_token_ids
+    #         while idx < length:
+    #             span = int(np.maximum(2.0, np.round(np.random.normal(mean_span_length, 1))))
+    #             # Begin a masked new span
+    #             if np.random.rand() <= mask_ratio:
+    #                 mask_hit = True
+    #                 # Mark the span
+    #                 idx_inputs += [self.sentinel_tokens[span_index]]
+    #                 idx_labels += [self.sentinel_tokens[span_index]]
+    #                 span_index = min(span_index + 1, len(self.sentinel_tokens) - 1)
+                    
+    #                 # Add the tokens to the labels
+    #                 idx_end = min(idx + span, length)
+    #                 idx_labels += tokens[idx:idx_end]
+    #                 idx = idx_end
+                    
+    #                 # Don't allow the next token to be part of a masked span
+    #                 if idx < length:
+    #                     idx_inputs += [tokens[idx]]
+    #                     idx = idx + 1
+                    
+    #             # Begin a new unmasked span
+    #             else:
+    #                 # Add the tokens to the inputs
+    #                 idx_end = min(idx + span, length)
+    #                 idx_inputs += tokens[idx:idx_end]
+    #                 idx = idx_end
+    #         idx_labels += [self.sentinel_tokens[span_index]]
+                    
+    #         assert idx == length
+
+    #     tokens_inputs = torch.LongTensor(idx_inputs)
+    #     tokens_labels = torch.LongTensor(idx_labels)
+
+    #     if len(tokens_inputs) > self.max_seq_length:
+    #         tokens_inputs = tokens_inputs[:self.max_seq_length]
+    #     if len(tokens_labels) > self.max_seq_length:
+    #         tokens_labels = tokens_labels[:self.max_seq_length]
+
+    #     example['input_ids'][:len(tokens_inputs)] = tokens_inputs
+    #     example['labels'][:len(tokens_labels)] = tokens_labels
+    #     example['attention_mask'][:len(tokens_inputs)] = 1
+    #     example['decoder_attention_mask'][:len(tokens_labels)] = 1
+        
+    #     return example
+
+    # def sequence_corrupt_token_sequence(self, example: Mapping[str, Any], mask_ratio: float):
+    #     tokens = example['input_ids']
+        
+    #     # Re-populate with an empty, padded example
+    #     example['input_ids'] = torch.full((self.max_seq_length,), self.tokenizer.pad_token_id)
+    #     example['labels']    = torch.full((self.max_seq_length,), -100) # Note: The HF code is hardcoded to use -100 as the ignore index
+    #     example['attention_mask'] = torch.zeros_like(example['input_ids'])
+    #     example['decoder_attention_mask'] = torch.zeros_like(example['labels'])
+        
+    #     length = len(tokens)
+    #     tag_tokens = self._denoiser_tag_token_ids['[S2S]']
+    #     label_token_length = int(np.round(np.random.uniform(low=1+len(tag_tokens), high=int(length*2*mask_ratio))))
+    #     input_token_length = length - label_token_length
+        
+    #     tokens_inputs = torch.LongTensor(tag_tokens + tokens[:input_token_length] + self.sentinel_tokens[:1])
+    #     tokens_labels = torch.LongTensor(self.sentinel_tokens[:1] + tokens[input_token_length:])
+
+    #     example['input_ids'][:len(tokens_inputs)] = tokens_inputs
+    #     example['labels'][:len(tokens_labels)] = tokens_labels
+    #     example['attention_mask'][:len(tokens_inputs)] = 1
+    #     example['decoder_attention_mask'][:len(tokens_labels)] = 1
+        
+    #     return example
 
     def __call__(self, examples: List[Dict[str, Any]]):
         """Batch examples processed by the span corrupter."""
