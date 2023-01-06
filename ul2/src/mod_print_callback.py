@@ -8,7 +8,7 @@ from composer import Callback, Logger, State
 from composer.utils import dist
 from src.data_c4 import MixtureOfDenoisersCollator
 
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 __all__ = ['MixtureOfDenoisersPrinterCallback']
 
@@ -20,6 +20,7 @@ class MixtureOfDenoisersPrinterCallback(Callback):
         print_frequency: int=500,
         max_length: int=128,
         raise_on_failure: bool=False,
+        generate_kwargs: Optional[Dict[str, Any]]=None,
     ) -> None:
 
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_name)
@@ -33,6 +34,8 @@ class MixtureOfDenoisersPrinterCallback(Callback):
         assert self.max_length >= 1
 
         self._raise_on_error = bool(raise_on_failure)
+
+        self._generate_kwargs = generate_kwargs if generate_kwargs else {}
 
         self._verified_collator = False
 
@@ -88,7 +91,7 @@ class MixtureOfDenoisersPrinterCallback(Callback):
         labels = batch['labels'][:1, attn_labels]
         
         # Generate the output prediction up to the maximum sequence length
-        outputs = model.generate(input_ids, max_length=self.max_length)
+        outputs = model.generate(input_ids, max_length=self.max_length, **self._generate_kwargs)
         
         # Decode the token sequences into strings
         input_str = self.tokenizer.decode(input_ids[0])
