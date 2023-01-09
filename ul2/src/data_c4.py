@@ -262,7 +262,12 @@ class MixtureOfDenoisersCollator:
                           tokens)
 
         # Remove masked tokens (but preserving the sentinel tokens)
-        return tokens[np.logical_not(nonstart_noise_span_token)]
+        noised_tokens = tokens[np.logical_not(nonstart_noise_span_token)]
+
+        # Ensure there's an end-of-sentence token at the end
+        if noised_tokens[-1] != self.tokenizer.eos_token_id:
+            noised_tokens = np.concatenate([noised_tokens, [self.tokenizer.eos_token_id]])
+        return noised_tokens
 
     def noise_token_sequence(self, example: Mapping[str, Any], mask_ratio: float, mean_span_length: Optional[float], prefix: Optional[str]):
         """Span corruption applicable to all UL2 denoising tasks
@@ -272,9 +277,6 @@ class MixtureOfDenoisersCollator:
         if length > self.max_seq_length:
             length = self.max_seq_length
         tokens = example['input_ids'][:length]
-
-        # Ensure that the token sequence ends with an end-of-sequence tag (this ensures that the final noise span ends with this tag)
-        tokens[-1] = self.tokenizer.eos_token_id
 
         # Figure out if there are any prefix tokens to handle
         if prefix is not None:
@@ -286,8 +288,8 @@ class MixtureOfDenoisersCollator:
 
         # mean_span_length==None is a special case for "sequential" denoising (where a single span at the end of the sequence is masked)
         if mean_span_length is None:
-            # This ensures that exactly 1 span will be produced and that trimming to max_seq_length will not cut off the sentinel
-            min_span_length = np.maximum(1, length + len(prefix) + 1 - self.max_seq_length)
+            # This ensures that exactly 1 span will be produced and that trimming to max_seq_length will not cut off the sentinel and <EOS>
+            min_span_length = np.maximum(1, length + len(prefix) + 2 - self.max_seq_length)
             max_span_length = np.maximum(min_span_length, np.minimum(length-1, 2*mask_ratio*length))
             mean_span_length = np.floor(np.random.uniform(low=min_span_length, high=max_span_length))
             mask_ratio = mean_span_length / length
