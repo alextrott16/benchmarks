@@ -1,7 +1,7 @@
-# Copyright 2022 MosaicML Benchmarks authors
+# Copyright 2022 MosaicML Examples authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build a StreamingC4 dataset and dataloader for training."""
+"""Build a StreamingTextDataset dataset and dataloader for training."""
 
 import os
 import sys
@@ -15,8 +15,10 @@ from streaming import Dataset
 from torch.utils.data import DataLoader
 
 
-class StreamingC4(Dataset):
-    """Implementation of the C4 dataset using MosaicML's streaming Dataset V2.
+class StreamingTextDataset(Dataset):
+    """Generic implementation of a text dataset using MosaicML's streaming.
+
+    Dataset V2.
 
     Args:
         remote (str): Remote directory (S3 or local filesystem) where dataset
@@ -32,6 +34,8 @@ class StreamingC4(Dataset):
         max_seq_len (int): The max sequence length of each sample.
         group_method (str): How to group text samples into token samples.
             Supports 'truncate' or 'concat'.
+        keep_zip (bool): Whether to keep or delete the compressed file when
+            decompressing downloaded shards.
         retry (int): Number of download re-attempts before giving up.
             Default: 2.
         timeout (float): How long to wait for shard to download before
@@ -49,6 +53,7 @@ class StreamingC4(Dataset):
                  tokenizer_name: str,
                  max_seq_len: int,
                  group_method: str = 'truncate',
+                 keep_zip: bool = False,
                  retry: int = 2,
                  timeout: float = 120,
                  batch_size: Optional[int] = None):
@@ -67,7 +72,7 @@ class StreamingC4(Dataset):
                          split=split,
                          shuffle=shuffle,
                          prefetch=prefetch,
-                         keep_zip=False,
+                         keep_zip=keep_zip,
                          retry=retry,
                          timeout=timeout,
                          hash=None,
@@ -151,20 +156,23 @@ class StreamingC4(Dataset):
             raise ValueError(f"Got unknown group_method='{self.group_method}'.")
 
 
-def build_c4_dataloader(cfg: DictConfig, device_batch_size: int):
-    assert cfg.name == 'c4', f'Tried to build c4 dataloader with cfg.name={cfg.name}'
-    dataset = StreamingC4(split=cfg.dataset.split,
-                          remote=cfg.dataset.remote,
-                          local=cfg.dataset.local,
-                          shuffle=cfg.dataset.shuffle,
-                          prefetch=cfg.dataset.prefetch,
-                          tokenizer_name=cfg.dataset.tokenizer_name,
-                          max_seq_len=cfg.dataset.max_seq_len,
-                          group_method=cfg.dataset.group_method,
-                          batch_size=device_batch_size)
+def build_text_dataloader(cfg: DictConfig, device_batch_size: int):
+    dataset = StreamingTextDataset(split=cfg.dataset.split,
+                                   remote=cfg.dataset.remote,
+                                   local=cfg.dataset.local,
+                                   shuffle=cfg.dataset.shuffle,
+                                   prefetch=cfg.dataset.prefetch,
+                                   tokenizer_name=cfg.dataset.tokenizer_name,
+                                   max_seq_len=cfg.dataset.max_seq_len,
+                                   group_method=cfg.dataset.group_method,
+                                   keep_zip=cfg.dataset.get('keep_zip', False),
+                                   batch_size=device_batch_size)
 
+    mlm_probability = cfg.dataset.get('mlm_probability', None)
     collate_fn = transformers.DataCollatorForLanguageModeling(
-        tokenizer=dataset.tokenizer, mlm=False)
+        tokenizer=dataset.tokenizer,
+        mlm=mlm_probability is not None,
+        mlm_probability=mlm_probability)
 
     return DataLoader(
         dataset,
@@ -183,14 +191,14 @@ def build_c4_dataloader(cfg: DictConfig, device_batch_size: int):
 # Run `python data.py [remote] [local, optional]` and verify that batches are printed out
 if __name__ == '__main__':
     remote = sys.argv[1]
+    ds_name = 'c4' if 'c4' in remote else 'the_pile' if 'pile' in remote else 'dataset'
     if len(sys.argv) > 2:
         local = sys.argv[2]
     else:
-        local = remote
-    print(f'Reading val split from {remote} -> {local}')
+        local = f'/tmp/{ds_name}' if 's3' in remote else remote
+    print(f'Reading val split of {ds_name} dataset from {remote} -> {local}')
 
     cfg = {
-        'name': 'c4',
         'dataset': {
             'remote': remote,
             'local': local,
@@ -199,19 +207,21 @@ if __name__ == '__main__':
             'prefetch': 1000,
             'tokenizer_name': 'gpt2',
             'max_seq_len': 32,
-            'group_method': 'concat'
+            'group_method': 'concat',
+            'keep_zip':
+                True  # since we are just testing, do not delete originals
         },
         'drop_last': False,
         'num_workers': 4,
         'pin_memory': True,
         'prefetch_factor': 2,
         'persistent_workers': True,
-        'timeout': 30,
+        'timeout': 60,
     }
     cfg = om.create(cfg)
     device_batch_size = 2
 
-    loader = build_c4_dataloader(cfg, device_batch_size)
+    loader = build_text_dataloader(cfg, device_batch_size)
     tokenizer = loader.dataset.tokenizer  # type: ignore
     for batch_ix, batch in enumerate(islice(loader, 5)):
         print('\n')

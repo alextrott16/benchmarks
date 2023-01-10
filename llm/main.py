@@ -1,66 +1,28 @@
-# Copyright 2022 MosaicML Benchmarks authors
+# Copyright 2022 MosaicML Examples authors
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import pathlib
 import sys
 import warnings
 
 from composer import Trainer
-from composer.callbacks import LRMonitor, MemoryMonitor, SpeedMonitor
-from composer.loggers import WandBLogger
-from composer.optim import DecoupledAdamW
-from composer.optim.scheduler import (ConstantWithWarmupScheduler,
-                                      CosineAnnealingWithWarmupScheduler)
 from composer.utils import dist, reproducibility
 from omegaconf import OmegaConf as om
-from src.data_c4 import build_c4_dataloader
 from src.model_registry import COMPOSER_MODEL_REGISTRY
 
-
-def build_logger(name, kwargs):
-    if name == 'wandb':
-        return WandBLogger(**kwargs)
-    else:
-        raise ValueError(f'Not sure how to build logger: {name}')
-
-
-def build_callback(name, kwargs):
-    if name == 'lr_monitor':
-        return LRMonitor()
-    elif name == 'memory_monitor':
-        return MemoryMonitor()
-    elif name == 'speed_monitor':
-        return SpeedMonitor(window_size=kwargs.get('window_size', 1))
-    else:
-        raise ValueError(f'Not sure how to build callback: {name}')
-
-
-def build_optimizer(cfg, model):
-    if cfg.name == 'decoupled_adamw':
-        return DecoupledAdamW(model.parameters(),
-                              lr=cfg.lr,
-                              betas=cfg.betas,
-                              eps=cfg.eps,
-                              weight_decay=cfg.weight_decay)
-    else:
-        raise ValueError(f'Not sure how to build optimizer: {cfg.name}')
-
-
-def build_scheduler(cfg):
-    if cfg.name == 'constant_with_warmup':
-        return ConstantWithWarmupScheduler(t_warmup=cfg.t_warmup)
-    elif cfg.name == 'cosine_with_warmup':
-        return CosineAnnealingWithWarmupScheduler(t_warmup=cfg.t_warmup,
-                                                  alpha_f=cfg.alpha_f)
-    else:
-        raise ValueError(f'Not sure how to build scheduler: {cfg.name}')
+sys.path.append(str(pathlib.Path(__file__).parent.parent / 'common'))
+from builders import (build_algorithm, build_callback, build_dataloader,
+                      build_logger, build_optimizer, build_scheduler)
+from logging_utils import log_config
 
 
 def calculate_batch_size_info(global_batch_size, device_microbatch_size):
     if global_batch_size % dist.get_world_size() != 0:
-        raise ValueError(f'Global batch size {global_batch_size} is not divisible by {dist.get_world_size()} '
-                         'as a result, the batch size would be truncated, please adjust `global_batch_size` '
-                         f'to be divisible by world size, {dist.get_world_size()}.')
+        raise ValueError(
+            f'Global batch size {global_batch_size} is not divisible by {dist.get_world_size()} '
+            'as a result, the batch size would be truncated, please adjust `global_batch_size` '
+            f'to be divisible by world size, {dist.get_world_size()}.')
     device_batch_size = global_batch_size // dist.get_world_size()
     if device_microbatch_size == 'auto':
         device_grad_accum = 'auto'
@@ -95,17 +57,6 @@ def update_batch_size_info(cfg):
     return cfg
 
 
-def log_config(cfg):
-    print(om.to_yaml(cfg))
-    if 'wandb' in cfg.get('loggers', {}):
-        try:
-            import wandb
-        except ImportError as e:
-            raise e
-        if wandb.run:
-            wandb.config.update(om.to_container(cfg, resolve=True))
-
-
 def build_composer_model(cfg):
     warnings.filterwarnings(
         action='ignore',
@@ -113,13 +64,6 @@ def build_composer_model(cfg):
     try:
         return COMPOSER_MODEL_REGISTRY[cfg.name](cfg)
     except:
-        raise ValueError(f'Not sure how to build model with name={cfg.name}')
-
-
-def build_dataloader(cfg, device_batch_size):
-    if cfg.name == 'c4':
-        return build_c4_dataloader(cfg, device_batch_size)
-    else:
         raise ValueError(f'Not sure how to build model with name={cfg.name}')
 
 
@@ -144,6 +88,8 @@ def main(cfg):
     model = build_composer_model(cfg.model)
     cfg.n_params = sum(p.numel() for p in model.parameters())
     print(f'{cfg.n_params=:.2e}')
+    if hasattr(model, 'num_fwd_flops'):
+        print(f'{model.num_fwd_flops=:.2e}')
 
     # Dataloaders
     print('Building train loader...')
@@ -170,6 +116,12 @@ def main(cfg):
         for name, callback_cfg in cfg.get('callbacks', {}).items()
     ]
 
+    # Algorithms
+    algos = [
+        build_algorithm(name, algorithm_cfg)
+        for name, algorithm_cfg in cfg.get('algorithms', {}).items()
+    ]
+
     # Build the Trainer
     trainer = Trainer(
         run_name=cfg.run_name,
@@ -185,11 +137,13 @@ def main(cfg):
                                                     -1),
         progress_bar=cfg.progress_bar,
         log_to_console=cfg.log_to_console,
+        console_log_interval='1ba',
         loggers=loggers,
         callbacks=callbacks,
         precision=cfg.precision,
-        grad_clip_norm=cfg.grad_clip_norm,
-        grad_accum=cfg.device_train_grad_accum,
+        algorithms=algos,
+        device_train_microbatch_size=cfg.get('device_train_microbatch_size',
+                                             'auto'),
         fsdp_config=fsdp_config,  # type: ignore
         save_folder=cfg.get('save_folder', None),
         save_interval=cfg.get('save_interval', '1000ba'),

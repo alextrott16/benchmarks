@@ -16,9 +16,11 @@ We even packed in a few tricks (e.g. [FlashAttention](https://github.com/HazyRes
 
 You'll find in this folder:
 * `src/mosaic_gpt.py` - a simple PyTorch GPT model, wrapped in `ComposerModel`, that can scale up to 70B parameters
-* `src/data_c4.py` - a [MosaicML streaming dataset](https://streaming.docs.mosaicml.com/en/latest/) that can be used with a vanilla PyTorch dataloader.
 * `main.py` - a script that builds a [Composer](https://github.com/mosaicml/composer) Trainer and calls `trainer.fit()`.
 * `yamls/` - pre-baked configs for training compute-optimal LLMs from 125M up to 70B parameters.
+
+In the [common](../common) folder, you will also find:
+* `common/text_data.py`- a [MosaicML streaming dataset](https://streaming.docs.mosaicml.com/en/latest/) that can be used with a vanilla PyTorch dataloader.
 
 At all model scales, we are training the exact same [vanilla PyTorch GPT model](./src/mosaic_gpt.py#L106), with no special parallelism strategies.
 Composer + FSDP does all the heavy lifting to make sure we can scale up without running out of memory and while maintaining high performance.
@@ -50,7 +52,7 @@ Here's what you need to get started with our LLM stack:
   * `omegaconf`
   * `wandb`
 
-* Prepare a local copy of the C4 dataset via instructions below.
+* Prepare a local copy of the dataset via instructions below.
 
 # Dataset preparation
 To run training, you'll need to make yourself a local copy of the pre-training dataset.
@@ -58,7 +60,7 @@ If you only want to profile these LLMs, we recommend that you **only download an
 and use it for both train and eval in your script. Just change `split: train` to `split: val` in your run YAML, [e.g. here](./yamls/mosaic_gpt/125m.yaml#L32).
 Alternatively, feel free to substitute our dataloader with one of your own in the entrypoint [main.py](./main.py#L93)!
 
-In this benchmark, we train LLMs on the [C4: Colossal, Cleaned, Common Crawl dataset](https://huggingface.co/datasets/c4).
+As an example, we train LLMs on the [C4: Colossal, Cleaned, Common Crawl dataset](https://huggingface.co/datasets/c4).
 We first convert the dataset from its native format (a collection of zipped JSONs)
 to MosaicML's streaming dataset format (a collection of binary `.mds` files).
 Once in `.mds` format, we can store the dataset in a central location (filesystem, S3, GCS, etc.)
@@ -71,12 +73,12 @@ To make yourself a copy of C4, use `convert_c4.py` like so:
 # Download the 'val' split and convert to StreamingDataset format
 # This will take 10 sec to 1 min depending on your Internet bandwidth
 # You should see a dataset folder `./my-copy-c4/val` that is ~0.5GB
-python convert_c4.py --out_root ./my-copy-c4 --splits val
+python ../scripts/convert_c4.py --out_root ./my-copy-c4 --splits val
 
 # Download the 'train' split if you really want to train the model (not just profile)
 # This will take 1-to-many hours depending on bandwidth, # CPUs, etc.
 # The final folder `./my-copy-c4/train` will be ~800GB so make sure you have space!
-python convert_c4.py --out_root ./my-copy-c4 --splits train
+python ../scripts/convert_c4.py --out_root ./my-copy-c4 --splits train
 ```
 
 ### Test the Dataloader
@@ -84,15 +86,15 @@ python convert_c4.py --out_root ./my-copy-c4 --splits train
 To verify that the dataloader works, run a quick test on your `val` split like so:
 
 ```bash
-# This will construct a `StreamingC4` dataset from your `val` split,
+# This will construct a `StreamingTextDataset` dataset from your `val` split,
 # pass it into a PyTorch Dataloader, and iterate over it and print samples.
 # Since remote and local are set to the same path, no streaming/copying takes place.
-python src/data_c4.py ./my-copy-c4 ./my-copy-c4
+python ../common/text_data.py ./my-copy-c4 ./my-copy-c4
 
 # This will do the same thing, but stream data from {remote} -> {local}.
 # The remote path can be a filesystem or object store URI.
-python src/data_c4.py ./my-copy-c4 /tmp/cache-c4
-python src/data_c4.py s3://my-bucket/my-copy-c4 /tmp/cache-c4
+python ../common/text_data.py ./my-copy-c4 /tmp/cache-c4
+python ../common/text_data.py s3://my-bucket/my-copy-c4 /tmp/cache-c4
 ```
 
 # How to start training

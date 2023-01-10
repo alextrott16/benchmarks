@@ -1,4 +1,4 @@
-# Copyright 2022 MosaicML Benchmarks authors
+# Copyright 2022 MosaicML Examples authors
 # SPDX-License-Identifier: Apache-2.0
 
 import os
@@ -6,7 +6,11 @@ import os
 import pytest
 import torch
 from omegaconf import OmegaConf as om
-from src.data_c4 import build_c4_dataloader
+
+import pathlib
+import sys
+sys.path.append(str(pathlib.Path(__file__).parent.parent.parent))
+from common.text_data import build_text_dataloader
 
 
 def get_config(conf_path='yamls/mosaic_gpt/125m.yaml'):
@@ -23,7 +27,7 @@ def test_correct_padding(batch_size=32):
     test_cfg = get_config(conf_path='yamls/mosaic_gpt/125m.yaml')
 
     # Dataloaders
-    eval_loader = build_c4_dataloader(test_cfg.eval_loader, batch_size)
+    eval_loader = build_text_dataloader(test_cfg.eval_loader, batch_size)
     batch = next(iter(eval_loader))
 
     assert batch['input_ids'].shape == torch.Size([batch_size, 2048])
