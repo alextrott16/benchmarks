@@ -104,7 +104,8 @@ class MixtureOfDenoisersPrinterCallback(Callback):
     def _format_strings(input_str: str, target_str: str, output_str: str) -> None:
         def split_input(s: str) -> List[str]:
             sentinels = [f'<extra_id_{i}>' for i in range(100)]
-            assert sentinels[0] in s
+            if sentinels[0] not in s:
+                s = s + sentinels[0]
             outs = []
             substr, s = s.split(sentinels[0])
             outs.append(substr)
@@ -118,7 +119,8 @@ class MixtureOfDenoisersPrinterCallback(Callback):
 
         def split_output(s: str) -> List[str]:
             sentinels = [f'<extra_id_{i}>' for i in range(100)]
-            assert sentinels[0] in s
+            if sentinels[0] not in s:
+                s = sentinels[0] + s
             outs = [s.split(sentinels[0])[1]]
             for s_idx in range(1, 100):
                 prev_s = outs.pop(-1)

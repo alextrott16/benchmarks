@@ -248,7 +248,17 @@ class MixtureOfDenoisersCollator:
 
         return mask
 
-    def apply_mask(self, tokens, mask):
+    def apply_mask(self, tokens, mask, use_sentinels):
+        if not use_sentinels:
+            # The logic is simple if we do not mark replaced spans with sentinel tokens
+            noised_tokens = np.array(tokens)[np.logical_not(mask)]
+
+            # Ensure there's an end-of-sentence token at the end
+            if noised_tokens[-1] != self.tokenizer.eos_token_id:
+                noised_tokens = np.concatenate([noised_tokens, [self.tokenizer.eos_token_id]])
+
+            return noised_tokens
+
         # Masking at previous token
         prev_token_mask = np.concatenate([[0], mask[:-1]])
 
@@ -293,14 +303,17 @@ class MixtureOfDenoisersCollator:
             max_span_length = np.maximum(min_span_length, np.minimum(length-1, 2*mask_ratio*length))
             mean_span_length = np.floor(np.random.uniform(low=min_span_length, high=max_span_length))
             mask_ratio = mean_span_length / length
+            use_sentinels = False
+        else:
+            use_sentinels = True
 
         # Generate the mask
         mask = self._sample_mask_array(length, mask_ratio, mean_span_length) # This function can be used for all the UL2 noising functions
         assert mask[0] == 0 # The sequence should always be unmasked at the beginning
 
         # Generate the input/label sequences given the raw tokens and the mask
-        tokens_inputs = self.apply_mask(tokens, mask)
-        tokens_labels = self.apply_mask(tokens, 1-mask)
+        tokens_inputs = self.apply_mask(tokens, mask, use_sentinels)
+        tokens_labels = self.apply_mask(tokens, 1-mask, use_sentinels)
 
         # Tag the inputs with any prefix
         if prefix is not None:
