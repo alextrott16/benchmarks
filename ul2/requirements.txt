@@ -6,3 +6,5 @@ omegaconf==2.2.3
 transformers==4.25.1
 torchmetrics==0.9.3
 wandb==0.13.6
+# need a newer version of triton
+triton==2.0.0.dev20221103
