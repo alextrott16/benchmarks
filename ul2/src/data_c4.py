@@ -14,7 +14,7 @@ import random
 import torch
 import numpy as np
 import transformers
-from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+from transformers import T5Tokenizer, T5TokenizerFast
 from omegaconf import OmegaConf as om
 from streaming import Dataset
 from torch.utils.data import DataLoader
@@ -142,25 +142,29 @@ class StreamingC4(Dataset):
 class MixtureOfDenoisersCollator:
     def __init__(
         self,
-        tokenizer: PreTrainedTokenizerBase,
+        tokenizer: Union[T5Tokenizer, T5TokenizerFast],
         max_seq_length: int,
+        decoder_only_format: bool = False,
         span_mean_lengths_and_ratios: Optional[Union[List[List[float]], List[float]]] = None,
         sequence_mask_ratios: Optional[Union[List[float], float]] = None,
     ):
         self.tokenizer = tokenizer
         self.max_seq_length = max_seq_length
+        self.decoder_only_format = decoder_only_format
+
+        if not isinstance(self.tokenizer, (T5Tokenizer, T5TokenizerFast)):
+            raise TypeError('Tokenizer must be from the T5 family.')
 
         self._denoiser_tags = [
             '[NLU]', # "Regular" span corruption
             '[NLG]', # "Extreme" span corruption
             '[S2S]', # Sequential denoising
         ]
-        self._denoiser_tag_token_ids = {} # To be appended to `input_ids` when corrupting
+        self._denoiser_tag_token_ids = {} # To be prepended to `input_ids` when corrupting
         for tag in self._denoiser_tags:
             tag_tokens = self.tokenizer(tag).input_ids
             special = self.tokenizer.get_special_tokens_mask(tag_tokens, already_has_special_tokens=True)
-            # non_special = torch.logical_not(torch.BoolTensor(special))
-            self._denoiser_tag_token_ids[tag] = [tag_token for tag_token, spc in zip(tag_tokens, special) if not spc]#tag_tokens[non_special]
+            self._denoiser_tag_token_ids[tag] = [tag_token for tag_token, spc in zip(tag_tokens, special) if not spc]
 
         self._noisers = []
         
@@ -299,7 +303,7 @@ class MixtureOfDenoisersCollator:
         # mean_span_length==None is a special case for "sequential" denoising (where a single span at the end of the sequence is masked)
         if mean_span_length is None:
             # This ensures that exactly 1 span will be produced and that trimming to max_seq_length will not cut off the sentinel and <EOS>
-            min_span_length = np.maximum(1, length + len(prefix) + 2 - self.max_seq_length)
+            min_span_length = np.maximum(1, length + len(prefix_tokens) + 2 - self.max_seq_length)
             max_span_length = np.maximum(min_span_length, np.minimum(length-1, 2*mask_ratio*length))
             mean_span_length = np.floor(np.random.uniform(low=min_span_length, high=max_span_length))
             mask_ratio = mean_span_length / length
@@ -325,6 +329,16 @@ class MixtureOfDenoisersCollator:
         if len(tokens_labels) > self.max_seq_length:
             tokens_labels = tokens_labels[:self.max_seq_length]
 
+        tokens_inputs = torch.LongTensor(tokens_inputs)
+        tokens_labels = torch.LongTensor(tokens_labels)
+
+        if self.decoder_only_format:
+            return self._populate_decoder_only(tokens_inputs, tokens_labels)
+        else:
+            return self._populate_encoder_decoder(tokens_inputs, tokens_labels)
+
+    def _populate_encoder_decoder(self, tokens_inputs: torch.LongTensor, tokens_labels: torch.LongTensor):
+        example = {}
         # Re-populate with an empty, padded example
         example['input_ids'] = torch.full((self.max_seq_length,), self.tokenizer.pad_token_id, dtype=torch.int32) 
         example['labels']    = torch.full((self.max_seq_length,), -100, dtype=torch.int32) # Note: The HF code is hardcoded to use -100 as the ignore index
@@ -332,14 +346,34 @@ class MixtureOfDenoisersCollator:
         example['decoder_attention_mask'] = torch.zeros_like(example['labels'])
 
         # Fill in with the processed results
-        tokens_inputs = torch.LongTensor(tokens_inputs)
-        tokens_labels = torch.LongTensor(tokens_labels)
-
         example['input_ids'][:len(tokens_inputs)] = tokens_inputs
         example['labels'][:len(tokens_labels)] = tokens_labels
         example['attention_mask'][:len(tokens_inputs)] = 1
         example['decoder_attention_mask'][:len(tokens_labels)] = 1
+        return example
 
+    def _populate_decoder_only(self, tokens_inputs: torch.LongTensor, tokens_labels: torch.LongTensor):
+        example = {}
+        # Re-populate with an empty, padded example
+        example['input_ids'] = torch.full((self.max_seq_length*2,), self.tokenizer.pad_token_id, dtype=torch.int32) 
+        example['labels']    = torch.full((self.max_seq_length*2,), -100, dtype=torch.int32) # Note: -100 is often hardcoded as the ignore index
+        example['attention_mask'] = torch.full((self.max_seq_length*2,), 0, dtype=torch.bool)
+        example['bidirectional_mask'] = torch.full((self.max_seq_length*2,), 0, dtype=torch.bool)
+
+        n_input = len(tokens_inputs)
+        n_label = len(tokens_labels)
+        n_concat = n_input + n_label
+        assert n_concat <= self.max_seq_length * 2
+
+        tokens_concat = torch.concat([tokens_inputs, tokens_labels], dim=0)
+
+        # Fill in with the processed results
+        example['input_ids'][:n_concat] = tokens_concat
+        # (Labels are a shifted version of `input_ids`, with the portion belonging to `tokens_inputs` masked so no loss is generated from them.)
+        example['labels'][:n_concat-1] = tokens_concat[1:]
+        example['labels'][:n_input-1] = -100
+        example['attention_mask'][:n_concat-1] = 1
+        example['bidirectional_mask'][:n_input] = 1
         return example
 
     def __call__(self, examples: List[Dict[str, Any]]):
@@ -350,19 +384,25 @@ class MixtureOfDenoisersCollator:
             processed_examples.append(noiser_fcn(example, **noiser_kwargs))
         batch = self.tokenizer.pad(processed_examples)
         
-        # Truncate portions of the encoder inputs that are purely padding
+        # Truncate portions of the inputs that are purely padding (up to a multiple of 8)
+        multiple_of = 8
         n_examples_per_length = batch['attention_mask'].sum(0)
-        keep_tokens = n_examples_per_length > 0
-        batch['input_ids'] = batch['input_ids'][:, keep_tokens]
-        batch['attention_mask'] = batch['attention_mask'][:, keep_tokens]
+        keep_tokens = torch.sum(n_examples_per_length > 0)
+        keep_tokens = int(multiple_of * torch.ceil(keep_tokens / multiple_of))
+        batch['input_ids'] = batch['input_ids'][:, :keep_tokens]
+        batch['attention_mask'] = batch['attention_mask'][:, :keep_tokens]
+        if self.decoder_only_format:
+            batch['labels'] = batch['labels'][:, :keep_tokens]
+            batch['bidirectional_mask'] = batch['bidirectional_mask'][:, :keep_tokens]
         
-        # Truncate portions of the decoder inputs that are purely padding
-        n_examples_per_length = batch['decoder_attention_mask'].sum(0)
-        keep_tokens = n_examples_per_length > 0
-        batch['labels'] = batch['labels'][:, keep_tokens]
-        batch['decoder_attention_mask'] = batch['decoder_attention_mask'][:, keep_tokens]
+        else:
+            # Truncate portions of the decoder inputs that are purely padding
+            n_examples_per_length = batch['decoder_attention_mask'].sum(0)
+            keep_tokens = n_examples_per_length > 0
+            batch['labels'] = batch['labels'][:, :keep_tokens]
+            batch['decoder_attention_mask'] = batch['decoder_attention_mask'][:, :keep_tokens]
+        
         return batch
-
     
 
 def build_c4_dataloader(cfg: Mapping[str, Any], device_batch_size: int):
@@ -381,6 +421,7 @@ def build_c4_dataloader(cfg: Mapping[str, Any], device_batch_size: int):
     collate_fn = MixtureOfDenoisersCollator(
         tokenizer=dataset.tokenizer,
         max_seq_length=cfg.dataset.max_seq_len,
+        decoder_only_format=cfg.decoder_only_format,
         span_mean_lengths_and_ratios=cfg.mixture_of_denoisers.get('span_mean_lengths_and_ratios', None),
         sequence_mask_ratios=cfg.mixture_of_denoisers.get('sequence_mask_ratios', None),
     )
