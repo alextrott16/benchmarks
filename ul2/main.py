@@ -22,6 +22,7 @@ from src.hf_t5 import create_hf_t5
 from src.inverse_sqrt_scheduler import InverseSquareRootScheduler
 from src.mod_print_callback import MixtureOfDenoisersPrinterCallback
 from src.super_glue.data import build_super_glue_task_dataloader
+from src.momo1.model import ComposerMosaicModel
 
 
 def build_logger(name, kwargs):
@@ -101,6 +102,8 @@ def build_model(cfg):
             z_loss=cfg.get('z_loss', 0.0),
             task_finetuning=cfg.get('task_finetuning', False),
         )
+    elif cfg.name == 'mosaic_model':
+        return ComposerMosaicModel(cfg)
     else:
         raise ValueError(f'Not sure how to build model with name={cfg.name}')
 
