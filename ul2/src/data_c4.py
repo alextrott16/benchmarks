@@ -398,7 +398,8 @@ class MixtureOfDenoisersCollator:
         else:
             # Truncate portions of the decoder inputs that are purely padding
             n_examples_per_length = batch['decoder_attention_mask'].sum(0)
-            keep_tokens = n_examples_per_length > 0
+            keep_tokens = torch.sum(n_examples_per_length > 0)
+            keep_tokens = int(multiple_of * torch.ceil(keep_tokens / multiple_of))
             batch['labels'] = batch['labels'][:, :keep_tokens]
             batch['decoder_attention_mask'] = batch['decoder_attention_mask'][:, :keep_tokens]
         
