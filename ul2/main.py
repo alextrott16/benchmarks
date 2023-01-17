@@ -46,6 +46,8 @@ def build_callback(name, kwargs):
 def build_algorithm(name, kwargs):
     if name == 'fused_layernorm':
         return algorithms.FusedLayerNorm(**kwargs)
+    elif name == 'gradient_clipping':
+        return algorithms.GradientClipping(**kwargs)
     else:
         raise ValueError(f'Not sure how to build algorithm: {name}')
 
@@ -121,6 +123,11 @@ def main(cfg):
     print(om.to_yaml(cfg))
     reproducibility.seed_all(cfg.seed)
 
+    # Read FSDP Config as a dict
+    fsdp_config = cfg.get('fsdp_config', None)
+    fsdp_config = om.to_container(fsdp_config,
+                                  resolve=True) if fsdp_config else None
+
     # Build Model
     print('Initializing model...')
     model = build_model(cfg.model)
@@ -171,6 +178,7 @@ def main(cfg):
         eval_dataloader=eval_loader,
         train_subset_num_batches=cfg.get('train_subset_num_batches', -1),
         eval_subset_num_batches=cfg.get('eval_subset_num_batches', 1000),
+        fsdp_config=fsdp_config,  # type: ignore
         optimizers=optimizer,
         schedulers=scheduler,
         max_duration=cfg.max_duration,
