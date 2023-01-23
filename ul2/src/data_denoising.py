@@ -226,7 +226,7 @@ class MixtureOfDenoisersCollator:
 
         # Sample the noise/non-noise span lengths and interleave them to generate the mask array.
         # Note: We always start with a non-noise span.
-        def _sample_span_lengths(total_tokens, num_spans):
+        def _sample_span_lengths(total_tokens: int, num_spans: int):
             """Samples lengths of num_spans segments, the combined length of which equals total_tokens"""
             span_markers = np.less(np.arange(total_tokens - 1), num_spans - 1)[np.random.permutation(total_tokens - 1)]
             span_start_indicator = np.concatenate([[0], span_markers])
