@@ -14,7 +14,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from composer.metrics.nlp import LanguageCrossEntropy, Perplexity
+from composer.metrics.nlp import LanguageCrossEntropy, Perplexity, MaskedAccuracy
 from composer.models.base import ComposerModel
 from omegaconf import DictConfig
 
@@ -149,7 +149,7 @@ class GPTBlock(nn.Module):
         elif cfg.attn_impl == 'torch':
             attn_cls = TorchAttention
         else:
-            raise NotImplemented(f'Attention implementation "{cfg.attn_imple}" is not available. Please choose "triton" or "torch".')
+            raise NotImplemented(f'Attention implementation "{cfg.attn_impl}" is not available. Please choose "triton" or "torch".')
         self.ln_1 = nn.LayerNorm(cfg.d_model, device=device)
         self.attn = attn_cls(cfg, device)
         self.ln_2 = nn.LayerNorm(cfg.d_model, device=device)
@@ -279,7 +279,21 @@ class MosaicModel(nn.Module):
 
         # output embedding weight tied to input embedding
         logits = F.linear(x, self.transformer.wte.weight, None)
-        return logits, attn_bias
+
+        if loss_generating_tokens is not None:
+            logits = self._flat_logits_to_full_shape(logits, loss_generating_tokens)
+
+        return logits
+
+    def _flat_logits_to_full_shape(self, logits: torch.FloatTensor, loss_generating_tokens: torch.ByteTensor):
+        """Reshape flattened logits to the full shape, with 0s at non-loss-generating-tokens"""
+        full_shape = loss_generating_tokens.shape + (self.cfg.vocab_size,)
+        full_flat_shape = (loss_generating_tokens.numel(), self.cfg.vocab_size)
+        logits_full_flat = torch.zeros(full_flat_shape, device=logits.device, dtype=logits.dtype)
+        logits_full_flat[loss_generating_tokens.view(-1)] = logits
+        logits_full = logits_full_flat.view(full_shape)
+        return logits_full
+
 
     # Param Initialization, needed for device='meta' fast initialization
     def param_init_fn(self, module):
@@ -353,28 +367,28 @@ class ComposerMosaicModel(ComposerModel):
         self.train_metrics = {
             'LanguageCrossEntropy': LanguageCrossEntropy(cfg.vocab_size),
             'Perplexity': Perplexity(),
+            'MaskedAccuracy': MaskedAccuracy(),
         }
         self.eval_metrics = {
             'LanguageCrossEntropy': LanguageCrossEntropy(cfg.vocab_size),
             'Perplexity': Perplexity(),
+            'MaskedAccuracy': MaskedAccuracy(),
         }
 
     def get_targets(self, batch):
-        if 'labels' in batch:
-            targets = batch['labels'].view(-1)
-            return targets[torch.not_equal(targets, -100)]
-        targets = torch.roll(batch['input_ids'], shifts=-1)
+        targets = torch.roll(batch['labels'], shifts=-1)
         targets[:, -1] = -100
         return targets
 
     def forward(self, batch):
         loss_generating_tokens = None
-        if 'labels' in batch:
-            loss_generating_tokens = torch.not_equal(batch['labels'], -100)
-        logits, _ = self.model(batch['input_ids'],
-                               attention_mask=batch.get('attention_mask', None),
-                               bidirectional_mask=batch.get('bidirectional_mask', None),
-                               loss_generating_tokens=loss_generating_tokens)
+        if 'bidirectional_mask' in batch:
+            # We save compute by not calculating logits inside the bidirectional prefix
+            loss_generating_tokens = torch.not_equal(self.get_targets(batch), -100)
+        logits = self.model(batch['input_ids'],
+                            attention_mask=batch.get('attention_mask', None),
+                            bidirectional_mask=batch.get('bidirectional_mask', None),
+                            loss_generating_tokens=loss_generating_tokens)
         return logits
 
     def eval_forward(self, batch, outputs=None):
