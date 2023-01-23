@@ -19,6 +19,7 @@ from omegaconf import OmegaConf as om
 
 from src.data_c4 import build_c4_dataloader
 from src.hf_t5 import create_hf_t5
+from src.hf_prefix_lm import create_hf_prefix_lm
 from src.inverse_sqrt_scheduler import InverseSquareRootScheduler
 from src.mod_print_callback import MixtureOfDenoisersPrinterCallback
 from src.super_glue.data import build_super_glue_task_dataloader
@@ -103,6 +104,15 @@ def build_model(cfg):
             tokenizer_name=cfg.get('tokenizer_name', None),
             z_loss=cfg.get('z_loss', 0.0),
             task_finetuning=cfg.get('task_finetuning', False),
+        )
+    elif cfg.name == 'hf_prefix_lm':
+        return create_hf_prefix_lm(
+            pretrained_model_name=cfg.pretrained_model_name,
+            tokenizer_name=cfg.tokenizer_name,
+            use_pretrained=cfg.get('use_pretrained', None),
+            model_config=cfg.get('model_config', None),
+            # z_loss=cfg.get('z_loss', 0.0),
+            # task_finetuning=cfg.get('task_finetuning', False),
         )
     elif cfg.name == 'mosaic_model':
         return ComposerMosaicModel(cfg)

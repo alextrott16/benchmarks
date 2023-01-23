@@ -12,13 +12,8 @@ from typing import Optional
 from composer.metrics.nlp import LanguageCrossEntropy, MaskedAccuracy
 from composer.models.huggingface import HuggingFaceModel
 from composer.utils.import_helpers import MissingConditionalImportError
-from src.super_glue.data import ExactMatch
+from src.super_glue.metrics import ExactMatch
 
-
-# from torchmetrics import MeanSquaredError
-# from torchmetrics.classification.accuracy import Accuracy
-# from torchmetrics.classification.matthews_corrcoef import MatthewsCorrCoef
-# from torchmetrics.regression.spearman import SpearmanCorrCoef
 
 __all__ = ['create_hf_t5']
 

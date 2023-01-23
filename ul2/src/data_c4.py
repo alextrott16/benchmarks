@@ -5,6 +5,7 @@
 Build a StreamingC4 dataset and dataloader for training.
 """
 
+import logging
 import os
 import sys
 from itertools import islice
@@ -14,10 +15,13 @@ import random
 import torch
 import numpy as np
 import transformers
-from transformers import T5Tokenizer, T5TokenizerFast
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 from omegaconf import OmegaConf as om
 from streaming import Dataset
 from torch.utils.data import DataLoader
+from src import utils
+
+log = logging.getLogger(__name__)
 
 
 class StreamingC4(Dataset):
@@ -138,11 +142,10 @@ class StreamingC4(Dataset):
         else:
             raise ValueError(f"Got unknown group_method='{self.group_method}'.")
 
-
 class MixtureOfDenoisersCollator:
     def __init__(
         self,
-        tokenizer: Union[T5Tokenizer, T5TokenizerFast],
+        tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
         max_seq_length: int,
         decoder_only_format: bool = False,
         span_mean_lengths_and_ratios: Optional[Union[List[List[float]], List[float]]] = None,
@@ -152,8 +155,10 @@ class MixtureOfDenoisersCollator:
         self.max_seq_length = max_seq_length
         self.decoder_only_format = decoder_only_format
 
-        if not isinstance(self.tokenizer, (T5Tokenizer, T5TokenizerFast)):
-            raise TypeError('Tokenizer must be from the T5 family.')
+        # Prepare the tokenizer for denoising tasks
+        n_sentinels = 100
+        utils.adapt_tokenizer_for_denoising(self.tokenizer, num_sentinel_tokens=n_sentinels)
+        self.sentinel_token_ids = np.array(tokenizer(''.join([f'<extra_id_{i}>' for i in range(n_sentinels)])).input_ids)
 
         self._denoiser_tags = [
             '[NLU]', # "Regular" span corruption
@@ -162,9 +167,7 @@ class MixtureOfDenoisersCollator:
         ]
         self._denoiser_tag_token_ids = {} # To be prepended to `input_ids` when corrupting
         for tag in self._denoiser_tags:
-            tag_tokens = self.tokenizer(tag).input_ids
-            special = self.tokenizer.get_special_tokens_mask(tag_tokens, already_has_special_tokens=True)
-            self._denoiser_tag_token_ids[tag] = [tag_token for tag_token, spc in zip(tag_tokens, special) if not spc]
+            self._denoiser_tag_token_ids[tag] = self.tokenizer(tag, add_special_tokens=False).input_ids
 
         self._noisers = []
         
@@ -208,8 +211,6 @@ class MixtureOfDenoisersCollator:
 
         if not self._noisers:
             raise ValueError("No denoising tasks were included. Make sure to set `span_mean_lengths_and_ratios` and/or `sequence_mask_ratios`.")
-        
-        self.sentinel_tokens = np.array(tokenizer.additional_special_tokens_ids)
 
     @staticmethod
     def _sample_mask_array(length: int, mask_ratio: float, mean_span_length: float):
@@ -272,7 +273,7 @@ class MixtureOfDenoisersCollator:
 
         # Replace tokens at the start of each noise span with its corresponding sentinel token
         tokens = np.where(start_of_noise_span_token,
-                          self.sentinel_tokens[np.cumsum(start_of_noise_span_token)-1],
+                          self.sentinel_token_ids[np.cumsum(start_of_noise_span_token)-1],
                           tokens)
 
         # Remove masked tokens (but preserving the sentinel tokens)
@@ -369,10 +370,10 @@ class MixtureOfDenoisersCollator:
 
         # Fill in with the processed results
         example['input_ids'][:n_concat] = tokens_concat
-        # (Labels are a shifted version of `input_ids`, with the portion belonging to `tokens_inputs` masked so no loss is generated from them.)
-        example['labels'][:n_concat-1] = tokens_concat[1:]
-        example['labels'][:n_input-1] = -100
-        example['attention_mask'][:n_concat-1] = 1
+        # (Here `labels` copies `input_ids` but with -100 at non-loss-generating tokens. `labels` will be shifted in the model code when computing loss.)
+        example['labels'][:n_concat] = tokens_concat
+        example['labels'][:n_input] = -100
+        example['attention_mask'][:n_concat] = 1
         example['bidirectional_mask'][:n_input] = 1
         return example
 
@@ -389,8 +390,10 @@ class MixtureOfDenoisersCollator:
         n_examples_per_length = batch['attention_mask'].sum(0)
         keep_tokens = torch.sum(n_examples_per_length > 0)
         keep_tokens = int(multiple_of * torch.ceil(keep_tokens / multiple_of))
+
         batch['input_ids'] = batch['input_ids'][:, :keep_tokens]
         batch['attention_mask'] = batch['attention_mask'][:, :keep_tokens]
+
         if self.decoder_only_format:
             batch['labels'] = batch['labels'][:, :keep_tokens]
             batch['bidirectional_mask'] = batch['bidirectional_mask'][:, :keep_tokens]
@@ -400,8 +403,12 @@ class MixtureOfDenoisersCollator:
             n_examples_per_length = batch['decoder_attention_mask'].sum(0)
             keep_tokens = torch.sum(n_examples_per_length > 0)
             keep_tokens = int(multiple_of * torch.ceil(keep_tokens / multiple_of))
+
             batch['labels'] = batch['labels'][:, :keep_tokens]
             batch['decoder_attention_mask'] = batch['decoder_attention_mask'][:, :keep_tokens]
+
+        # This slicing can produce non-contiguous tensors, so use .contiguous to prevent related problems
+        batch = {k: v.contiguous() for k, v in batch.items()}
         
         return batch
     
@@ -422,7 +429,7 @@ def build_c4_dataloader(cfg: Mapping[str, Any], device_batch_size: int):
     collate_fn = MixtureOfDenoisersCollator(
         tokenizer=dataset.tokenizer,
         max_seq_length=cfg.dataset.max_seq_len,
-        decoder_only_format=cfg.decoder_only_format,
+        decoder_only_format=cfg.mixture_of_denoisers.get('decoder_only_format', False),
         span_mean_lengths_and_ratios=cfg.mixture_of_denoisers.get('span_mean_lengths_and_ratios', None),
         sequence_mask_ratios=cfg.mixture_of_denoisers.get('sequence_mask_ratios', None),
     )
