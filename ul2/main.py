@@ -4,64 +4,38 @@
 import os
 import sys
 
-import wandb
 from composer.utils import dist, reproducibility
-from composer import algorithms
 from composer import Trainer
-from composer.callbacks import LRMonitor, MemoryMonitor, SpeedMonitor
-from composer.loggers import WandBLogger
-from composer.optim import DecoupledAdamW
-from composer.optim.scheduler import (ConstantWithWarmupScheduler,
-                                      CosineAnnealingWithWarmupScheduler,
-                                      LinearWithWarmupScheduler)
+
 from transformers import Adafactor
 from omegaconf import OmegaConf as om
 
-from src.data_c4 import build_c4_dataloader
+from src.data_denoising import build_text_denoising_dataloader
+from src.super_glue.data import build_super_glue_task_dataloader
 from src.hf_t5 import create_hf_t5
 from src.hf_prefix_lm import create_hf_prefix_lm
+from src.momo1.model import ComposerMosaicModel
 from src.inverse_sqrt_scheduler import InverseSquareRootScheduler
 from src.mod_print_callback import MixtureOfDenoisersPrinterCallback
-from src.super_glue.data import build_super_glue_task_dataloader
-from src.momo1.model import ComposerMosaicModel
+
+from mosaicml_examples.builders import (build_logger, build_algorithm)
+from mosaicml_examples.builders import build_callback as _build_callback
+from mosaicml_examples.builders import build_optimizer as _build_optimizer
+from mosaicml_examples.builders import build_scheduler as _build_scheduler
+from mosaicml_examples.logging_utils import log_config
 
 
-def build_logger(name, kwargs):
-    if name == 'wandb':
-        return WandBLogger(**kwargs)
-    else:
-        raise ValueError(f'Not sure how to build logger: {name}')
 
 def build_callback(name, kwargs):
-    if name == 'lr_monitor':
-        return LRMonitor()
-    elif name == 'memory_monitor':
-        return MemoryMonitor()
-    elif name == 'speed_monitor':
-        return SpeedMonitor(window_size=kwargs.get('window_size', 1))
-    elif name == 'mod_printer':
+    """Adds mixture-of-denoiser printer callback to common callbacks"""
+    if name == 'mod_printer':
         return MixtureOfDenoisersPrinterCallback(**kwargs)
     else:
-        raise ValueError(f'Not sure how to build callback: {name}')
-
-def build_algorithm(name, kwargs):
-    if name == 'fused_layernorm':
-        return algorithms.FusedLayerNorm(**kwargs)
-    elif name == 'gradient_clipping':
-        return algorithms.GradientClipping(**kwargs)
-    else:
-        raise ValueError(f'Not sure how to build algorithm: {name}')
+        return _build_callback(name, kwargs)
 
 def build_optimizer(cfg, model):
-    if cfg.name == 'decoupled_adamw':
-        return DecoupledAdamW(
-            model.parameters(),
-            lr=cfg.lr,
-            betas=cfg.betas,
-            eps=cfg.eps,
-            weight_decay=cfg.weight_decay
-        )
-    elif cfg.name == 'adafactor':
+    """Adds Adafactor to common optimizers"""
+    if cfg.name == 'adafactor':
         return Adafactor(
             params=model.parameters(),
             lr=cfg.get('lr', 1.0), # Recommend using InverseSquareRootScheduler with default settings when using these defaults
@@ -72,30 +46,20 @@ def build_optimizer(cfg, model):
             warmup_init=cfg.get('warmup_init', False)
         )
     else:
-        raise ValueError(f'Not sure how to build optimizer: {cfg.name}')
-
+        return _build_optimizer(cfg, model)
+    
 def build_scheduler(cfg):
-    if cfg.name == 'constant_with_warmup':
-        return ConstantWithWarmupScheduler(
-            t_warmup=cfg.t_warmup)
-    elif cfg.name == 'linear_decay_with_warmup':
-        return LinearWithWarmupScheduler(
-            t_warmup=cfg.t_warmup,
-            alpha_f=cfg.alpha_f
-        )
-    elif cfg.name == 'cosine_with_warmup':
-        return CosineAnnealingWithWarmupScheduler(
-            t_warmup=cfg.t_warmup,
-            alpha_f=cfg.alpha_f)
-    elif cfg.name == 'inverse_square_root':
+    """Adds inverse-square-root to common schedulers"""
+    if cfg.name == 'inverse_square_root':
         return InverseSquareRootScheduler(
             alpha_max=cfg.alpha_max,
             scale=cfg.get('scale', 1.0),
         )
     else:
-        raise ValueError(f'Not sure how to build scheduler: {cfg.name}')
-
+        return _build_scheduler(cfg)
+    
 def build_model(cfg):
+    """Constructs a HuggingFace T5 or PrefixLM, or a MosaicModel1"""
     if cfg.name == 'hf_t5':
         return create_hf_t5(
             pretrained_model_name=cfg.pretrained_model_name,
@@ -120,8 +84,9 @@ def build_model(cfg):
         raise ValueError(f'Not sure how to build model with name={cfg.name}')
 
 def build_dataloader(cfg, device_batch_size, mode):
-    if cfg.name == 'c4':
-        return build_c4_dataloader(cfg, device_batch_size)
+    """Constructs a text_denoising or super_glue dataloader"""
+    if cfg.name == 'text_denoising':
+        return build_text_denoising_dataloader(cfg, device_batch_size)
     elif cfg.name == 'super_glue':
         return build_super_glue_task_dataloader(cfg, device_batch_size, mode)
     else:
@@ -160,18 +125,27 @@ def main(cfg):
 
     # Optimizer
     optimizer = build_optimizer(cfg.optimizer, model)
-    
+
     # Scheduler
     scheduler = build_scheduler(cfg.scheduler)
 
     # Loggers
-    loggers = [build_logger(name, logger_cfg) for name, logger_cfg in cfg.get('loggers', {}).items()]
+    loggers = [
+        build_logger(name, logger_cfg)
+        for name, logger_cfg in cfg.get('loggers', {}).items()
+    ]
 
     # Callbacks
-    callbacks = [build_callback(name, callback_cfg) for name, callback_cfg in cfg.get('callbacks', {}).items()]
+    callbacks = [
+        build_callback(name, callback_cfg)
+        for name, callback_cfg in cfg.get('callbacks', {}).items()
+    ]
 
     # Algorithms
-    algorithms = [build_algorithm(name, algorithm_cfg) for name, algorithm_cfg in cfg.get('algorithms', {}).items()]
+    algorithms = [
+        build_algorithm(name, algorithm_cfg)
+        for name, algorithm_cfg in cfg.get('algorithms', {}).items()
+    ]
 
     if 'run_name' in cfg:
         run_name = cfg['run_name']
@@ -199,7 +173,6 @@ def main(cfg):
         callbacks=callbacks,
         precision=cfg.precision,
         device=cfg.get('device', None),
-        grad_clip_norm=cfg.get('grad_clip_norm', -1.0),
         grad_accum=cfg.get('grad_accum', 'auto'),
         save_folder=cfg.get('save_folder', None),
         save_interval=cfg.get('save_interval', '1000ba'),
@@ -208,19 +181,13 @@ def main(cfg):
         load_weights_only=cfg.get('load_weights_only', False),
     )
 
-    print("Logging config...")
-    config_dict = om.to_container(cfg, resolve=True)
-    config_dict.update({
-        'n_gpus': dist.get_world_size(),
-        'n_params': n_params,
-        'device_train_batch_size': device_train_batch_size,
-        'device_eval_batch_size': device_eval_batch_size,
-    })
-    if wandb.run is not None:
-        wandb.config.update(config_dict)
+    print('Logging config...')
+    log_config(cfg)
 
-    print("Starting training...")
+    print('Starting training...')
     trainer.fit()
+
+    print('Done.')
 
 
 if __name__ == '__main__':

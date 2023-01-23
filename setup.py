@@ -9,7 +9,7 @@ from setuptools import setup
 
 _PACKAGE_NAME = 'mosaicml-examples'
 _PACKAGE_DIR = 'mosaicml_examples'
-_EXAMPLE_SUBDIRS = ('cifar', 'resnet', 'deeplab', 'bert', 'llm')
+_EXAMPLE_SUBDIRS = ('cifar', 'resnet', 'deeplab', 'bert', 'llm', 'ul2')
 
 _project_root = os.path.dirname(os.path.realpath(__file__))
 

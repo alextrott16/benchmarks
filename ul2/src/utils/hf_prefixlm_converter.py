@@ -1,4 +1,4 @@
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from types import MethodType
 
 import torch
@@ -90,7 +90,7 @@ def convert_gpt_causal_lm_to_prefix_lm(model: CAUSAL_GPT_TYPES) -> CAUSAL_GPT_TY
     setattr(model, '_original_forward', getattr(model, 'forward'))
     setattr(model, '_original_generate', getattr(model, 'generate'))
 
-    def forward(self: CAUSAL_GPT_TYPES, *args, bidirectional_mask: Optional[torch.ByteTensor]=None, **kwargs):
+    def forward(self: CAUSAL_GPT_TYPES, *args: tuple, bidirectional_mask: Optional[torch.ByteTensor]=None, **kwargs: Dict[str, Any]):
         """Wrapper around original `forward()` that enables PrefixLM-style attention."""
         if bidirectional_mask is None:
             # This wrapper is a no-op if bidirectional masks are not supplied
@@ -122,7 +122,7 @@ def convert_gpt_causal_lm_to_prefix_lm(model: CAUSAL_GPT_TYPES) -> CAUSAL_GPT_TY
         # Return the outputs
         return output
 
-    def generate(self: CAUSAL_GPT_TYPES, *args, **kwargs):
+    def generate(self: CAUSAL_GPT_TYPES, *args: tuple, **kwargs: Dict[str, Any]):
         """Wrapper around original `generate()` that enables PrefixLM-style attention."""
 
         attn_modules = _get_attn_modules(model)

@@ -1,13 +1,13 @@
 # Use this YAML to verify that UL2 pre-training works. Runs on CPU or GPUs (if available).
 # From `benchmarks/ul2`, run: 
-#   `composer main.py yamls/test/main.yaml` to run using the HuggingFace T5
+#   `composer main.py yamls/test/main.yaml` to run using a HF Causal LM converted to a Prefix LM
 
 data_remote: &data_remote /Users/atrott/my-copy-c4 # Follow the instructions in the README to set up ./my-copy-c4
 data_local: &data_local /Users/atrott/my-copy-c4
-tokenizer_name: &tokenizer_name t5-small
+tokenizer_name: &tokenizer_name gpt2
 max_seq_len: &max_seq_len 128
 mixture_of_denoisers: &mixture_of_denoisers
-  decoder_only_format: false
+  decoder_only_format: true
   span_mean_lengths_and_ratios: [[3, .15], [12, .15]]
   sequence_mask_ratios: 0.25
 
@@ -16,11 +16,10 @@ run_name: test
 
 # Model
 model:
-  name: hf_t5
+  name: hf_prefix_lm
   use_pretrained: true # Train the model from scratch. Set to true to start from the HF off-the-shelf weights.
   pretrained_model_name: *tokenizer_name
   tokenizer_name: *tokenizer_name
-  z_loss: 0.0001
 
 # Dataloaders
 train_loader:
@@ -74,6 +73,7 @@ optimizer:
   weight_decay: 0.0 # Amount of weight decay regularization
   scale_parameter: true
 
+grad_clip_norm: -1.0
 
 # Training duration and evaluation frequency
 max_duration: 10ba

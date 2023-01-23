@@ -2,145 +2,143 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Build a StreamingC4 dataset and dataloader for training.
+Build a Streaming dataset and dataloader for training on a (mixture of) denoising task(s).
 """
 
 import logging
-import os
 import sys
 from itertools import islice
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Union
+from typing import Any, Dict, List, Mapping, Optional, Union
 
 import random
 import torch
 import numpy as np
-import transformers
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
+from omegaconf import DictConfig
 from omegaconf import OmegaConf as om
-from streaming import Dataset
 from torch.utils.data import DataLoader
+
 from src import utils
+from mosaicml_examples.text_data import StreamingTextDataset
 
 log = logging.getLogger(__name__)
 
+#     """
+#     Implementation of the C4 (Colossal Cleaned Common Crawl) dataset using mosaicml-streaming's Dataset V2.
 
-class StreamingC4(Dataset):
-    """
-    Implementation of the C4 (Colossal Cleaned Common Crawl) dataset using mosaicml-streaming's Dataset V2.
+#     Args:
+#         remote (str): Remote directory (S3 or local filesystem) where dataset is stored.
+#         local (str): Local filesystem directory where dataset is cached during operation.
+#         split (str): The dataset split to use, either 'train' or 'val'.
+#         shuffle (bool): Whether to shuffle the samples in this dataset.
+#         prefetch (int): Target number of samples remaining to prefetch while iterating.
+#         tokenizer_name (str): The name of the HuggingFace tokenizer to use to tokenize samples.
+#         max_seq_len (int): The max sequence length of each token sample.
+#         group_method (str): How to group text samples into token samples. Supports 'concat' (default) or 'truncate'.
+#         retry (int): Number of download re-attempts before giving up. Default: 2.
+#         timeout (float): How long to wait for shard to download before raising an exception. Default: 120 sec.
+#         batch_size (Optional[int]): Hint batch_size that will be used on each device's DataLoader. Default: ``None``.
+#     """
 
-    Args:
-        remote (str): Remote directory (S3 or local filesystem) where dataset is stored.
-        local (str): Local filesystem directory where dataset is cached during operation.
-        split (str): The dataset split to use, either 'train' or 'val'.
-        shuffle (bool): Whether to shuffle the samples in this dataset.
-        prefetch (int): Target number of samples remaining to prefetch while iterating.
-        tokenizer_name (str): The name of the HuggingFace tokenizer to use to tokenize samples.
-        max_seq_len (int): The max sequence length of each token sample.
-        group_method (str): How to group text samples into token samples. Supports 'concat' (default) or 'truncate'.
-        retry (int): Number of download re-attempts before giving up. Default: 2.
-        timeout (float): How long to wait for shard to download before raising an exception. Default: 120 sec.
-        batch_size (Optional[int]): Hint batch_size that will be used on each device's DataLoader. Default: ``None``.
-    """
+#     def __init__(self,
+#                  remote: str,
+#                  local: str,
+#                  split: str,
+#                  shuffle: bool,
+#                  prefetch: int,
+#                  tokenizer_name: str,
+#                  max_seq_len: int,
+#                  group_method: str = 'concat',
+#                  retry: int = 2,
+#                  timeout: float = 120,
+#                  batch_size: Optional[int] = None):
+#         # Validation
+#         if split not in ['train', 'val']:
+#             raise ValueError(f"split='{split}' must be one of ['train', 'val'].")
+#         if group_method not in ['truncate', 'concat']:
+#             raise ValueError(f"group_method='{group_method}' must be one of ['truncate', 'concat'].")
 
-    def __init__(self,
-                 remote: str,
-                 local: str,
-                 split: str,
-                 shuffle: bool,
-                 prefetch: int,
-                 tokenizer_name: str,
-                 max_seq_len: int,
-                 group_method: str = 'concat',
-                 retry: int = 2,
-                 timeout: float = 120,
-                 batch_size: Optional[int] = None):
-        # Validation
-        if split not in ['train', 'val']:
-            raise ValueError(f"split='{split}' must be one of ['train', 'val'].")
-        if group_method not in ['truncate', 'concat']:
-            raise ValueError(f"group_method='{group_method}' must be one of ['truncate', 'concat'].")
+#         # Build Dataset
+#         super().__init__(remote=remote,
+#                          local=local,
+#                          split=split,
+#                          shuffle=shuffle,
+#                          prefetch=prefetch,
+#                          keep_zip=False,
+#                          retry=retry,
+#                          timeout=timeout,
+#                          hash=None,
+#                          batch_size=batch_size)
+#         self.tokenizer_name = tokenizer_name
+#         self.max_seq_len = max_seq_len
+#         self.group_method = group_method
 
-        # Build Dataset
-        super().__init__(remote=remote,
-                         local=local,
-                         split=split,
-                         shuffle=shuffle,
-                         prefetch=prefetch,
-                         keep_zip=False,
-                         retry=retry,
-                         timeout=timeout,
-                         hash=None,
-                         batch_size=batch_size)
-        self.tokenizer_name = tokenizer_name
-        self.max_seq_len = max_seq_len
-        self.group_method = group_method
+#         # Build tokenizer
+#         os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
+#         self.tokenizer = transformers.AutoTokenizer.from_pretrained(self.tokenizer_name)
+#         if self.tokenizer.pad_token is None:
+#             # Some tokenizers (e.g. GPT2 tokenizer) have no padding token which causes bugs
+#             self.tokenizer.pad_token = self.tokenizer.eos_token
+#         # suppress warnings when using group_method='concat' and no truncation
+#         self.tokenizer.model_max_length = int(1e30)
 
-        # Build tokenizer
-        os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
-        self.tokenizer = transformers.AutoTokenizer.from_pretrained(self.tokenizer_name)
-        if self.tokenizer.pad_token is None:
-            # Some tokenizers (e.g. GPT2 tokenizer) have no padding token which causes bugs
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-        # suppress warnings when using group_method='concat' and no truncation
-        self.tokenizer.model_max_length = int(1e30)
+#     # How to tokenize a text sample to a token sample
+#     def _tokenize(self, text_sample):
+#         if self.group_method == 'truncate':
+#             truncation = True
+#             padding = True
+#             max_length = self.max_seq_len
+#         elif self.group_method == 'concat':
+#             truncation = False
+#             padding = False
+#             max_length = None
+#         else:
+#             raise ValueError(f"Got unknown group_method='{self.group_method}'.")
+#         return self.tokenizer(text_sample['text'], truncation=truncation, padding=padding, max_length=max_length)
 
-    # How to tokenize a text sample to a token sample
-    def _tokenize(self, text_sample):
-        if self.group_method == 'truncate':
-            truncation = True
-            padding = True
-            max_length = self.max_seq_len
-        elif self.group_method == 'concat':
-            truncation = False
-            padding = False
-            max_length = None
-        else:
-            raise ValueError(f"Got unknown group_method='{self.group_method}'.")
-        return self.tokenizer(text_sample['text'], truncation=truncation, padding=padding, max_length=max_length)
+#     # How to process a sample
+#     def __getitem__(self, idx: int) -> Dict[str, Any]:
+#         text_sample = super().__getitem__(idx)
+#         token_sample = self._tokenize(text_sample)
+#         return token_sample
 
-    # How to process a sample
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
-        text_sample = super().__getitem__(idx)
-        token_sample = self._tokenize(text_sample)
-        return token_sample
+#     # Define iterable over samples
+#     # Usually this can be left alone and inherited directly from super() class StreamingDataset, but concatenating samples is custom behavior.
+#     # If group_method=='truncate', we simply return the token sample.
+#     # If group_method=='concat', then we keep fetching token samples until we fill up max_seq_len.
+#     def __iter__(self) -> Iterator[Any]:
+#         if self.group_method == 'truncate':
+#             iterator = super().__iter__()
+#             yield from iterator
 
-    # Define iterable over samples
-    # Usually this can be left alone and inherited directly from super() class StreamingDataset, but concatenating samples is custom behavior.
-    # If group_method=='truncate', we simply return the token sample.
-    # If group_method=='concat', then we keep fetching token samples until we fill up max_seq_len.
-    def __iter__(self) -> Iterator[Any]:
-        if self.group_method == 'truncate':
-            iterator = super().__iter__()
-            yield from iterator
+#         elif self.group_method == 'concat':
+#             buffer = {}
+#             while True:
+#                 iterator = super().__iter__()
+#                 for sample in iterator:
 
-        elif self.group_method == 'concat':
-            buffer = {}
-            while True:
-                iterator = super().__iter__()
-                for sample in iterator:
+#                     for k, v in sample.items():
+#                         buffer[k] = buffer.get(k, []) + v
+#                     while len(buffer['input_ids']) >= self.max_seq_len:
+#                         concat_sample = {}
+#                         for k, v in buffer.items():
+#                             concat_sample[k] = v[:self.max_seq_len]
+#                             buffer[k] = v[self.max_seq_len:]
+#                         yield concat_sample
+#         else:
+#             raise ValueError(f"Got unknown group_method='{self.group_method}'.")
 
-                    for k, v in sample.items():
-                        buffer[k] = buffer.get(k, []) + v
-                    while len(buffer['input_ids']) >= self.max_seq_len:
-                        concat_sample = {}
-                        for k, v in buffer.items():
-                            concat_sample[k] = v[:self.max_seq_len]
-                            buffer[k] = v[self.max_seq_len:]
-                        yield concat_sample
-        else:
-            raise ValueError(f"Got unknown group_method='{self.group_method}'.")
-
-    # Define length
-    # Usually this can be left alone and inherited directly from super() class Dataset, but concatenating samples is custom behavior.
-    # If group_method=='truncate', we simply return the # samples.
-    # If group_method=='concat', we repeat forever, and we don't have a defined length.
-    def __len__(self) -> int:
-        if self.group_method == 'truncate':
-            return super().__len__()
-        elif self.group_method == 'concat':
-            return None
-        else:
-            raise ValueError(f"Got unknown group_method='{self.group_method}'.")
+#     # Define length
+#     # Usually this can be left alone and inherited directly from super() class Dataset, but concatenating samples is custom behavior.
+#     # If group_method=='truncate', we simply return the # samples.
+#     # If group_method=='concat', we repeat forever, and we don't have a defined length.
+#     def __len__(self) -> int:
+#         if self.group_method == 'truncate':
+#             return super().__len__()
+#         elif self.group_method == 'concat':
+#             return None
+#         else:
+#             raise ValueError(f"Got unknown group_method='{self.group_method}'.")
 
 class MixtureOfDenoisersCollator:
     def __init__(
@@ -213,7 +211,7 @@ class MixtureOfDenoisersCollator:
             raise ValueError("No denoising tasks were included. Make sure to set `span_mean_lengths_and_ratios` and/or `sequence_mask_ratios`.")
 
     @staticmethod
-    def _sample_mask_array(length: int, mask_ratio: float, mean_span_length: float):
+    def _sample_mask_array(length: int, mask_ratio: float, mean_span_length: float) -> np.ndarray:
         if mask_ratio == 0.0:
             return np.zeros(length)
         # This first block computes the number of noise/non-noise spans and the total tokens in each.
@@ -253,7 +251,7 @@ class MixtureOfDenoisersCollator:
 
         return mask
 
-    def apply_mask(self, tokens, mask, use_sentinels):
+    def apply_mask(self, tokens: List, mask: np.ndarray, use_sentinels: bool) -> np.ndarray:
         if not use_sentinels:
             # The logic is simple if we do not mark replaced spans with sentinel tokens
             noised_tokens = np.array(tokens)[np.logical_not(mask)]
@@ -284,9 +282,14 @@ class MixtureOfDenoisersCollator:
             noised_tokens = np.concatenate([noised_tokens, [self.tokenizer.eos_token_id]])
         return noised_tokens
 
-    def noise_token_sequence(self, example: Mapping[str, Any], mask_ratio: float, mean_span_length: Optional[float], prefix: Optional[str]):
-        """Span corruption applicable to all UL2 denoising tasks
-        """
+    def noise_token_sequence(
+            self,
+            example: Mapping[str, Any],
+            mask_ratio: float,
+            mean_span_length: Optional[float],
+            prefix: Optional[str]
+        ) -> Dict[str, torch.Tensor]:
+        """Span corruption applicable to all UL2 denoising tasks"""
         # Extract the raw text tokens (trim if we need to)
         length = sum(example['attention_mask'])
         if length > self.max_seq_length:
@@ -338,7 +341,7 @@ class MixtureOfDenoisersCollator:
         else:
             return self._populate_encoder_decoder(tokens_inputs, tokens_labels)
 
-    def _populate_encoder_decoder(self, tokens_inputs: torch.LongTensor, tokens_labels: torch.LongTensor):
+    def _populate_encoder_decoder(self, tokens_inputs: torch.LongTensor, tokens_labels: torch.LongTensor) -> Dict[str, torch.Tensor]:
         example = {}
         # Re-populate with an empty, padded example
         example['input_ids'] = torch.full((self.max_seq_length,), self.tokenizer.pad_token_id, dtype=torch.int32) 
@@ -353,7 +356,7 @@ class MixtureOfDenoisersCollator:
         example['decoder_attention_mask'][:len(tokens_labels)] = 1
         return example
 
-    def _populate_decoder_only(self, tokens_inputs: torch.LongTensor, tokens_labels: torch.LongTensor):
+    def _populate_decoder_only(self, tokens_inputs: torch.LongTensor, tokens_labels: torch.LongTensor) -> Dict[str, torch.Tensor]:
         example = {}
         # Re-populate with an empty, padded example
         example['input_ids'] = torch.full((self.max_seq_length*2,), self.tokenizer.pad_token_id, dtype=torch.int32) 
@@ -377,7 +380,7 @@ class MixtureOfDenoisersCollator:
         example['bidirectional_mask'][:n_input] = 1
         return example
 
-    def __call__(self, examples: List[Dict[str, Any]]):
+    def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         """Batch examples processed by the span corrupter."""
         processed_examples = []
         for example in examples:
@@ -413,18 +416,24 @@ class MixtureOfDenoisersCollator:
         return batch
     
 
-def build_c4_dataloader(cfg: Mapping[str, Any], device_batch_size: int):
-
-    assert cfg.name == 'c4', f'Tried to build c4 dataloader with cfg.name={cfg.name}'
-    dataset = StreamingC4(split=cfg.dataset.split,
-                            remote=cfg.dataset.remote,
-                            local=cfg.dataset.local,
-                            shuffle=cfg.dataset.shuffle,
-                            prefetch=cfg.dataset.prefetch,
-                            tokenizer_name=cfg.dataset.tokenizer_name,
-                            max_seq_len=cfg.dataset.max_seq_len,
-                            group_method=cfg.dataset.group_method,
-                            batch_size=device_batch_size)
+def build_text_denoising_dataloader(cfg: DictConfig, device_batch_size: int) -> DataLoader:
+    assert cfg.name == 'text_denoising', f'Tried to build_denoising text dataloader with cfg.name={cfg.name}'
+    dataset = StreamingTextDataset(
+        local=cfg.dataset.local,
+        tokenizer_name=cfg.dataset.tokenizer_name,
+        max_seq_len=cfg.dataset.max_seq_len,
+        group_method=cfg.dataset.group_method,
+        remote=cfg.dataset.get('remote', None),
+        split=cfg.dataset.get('split', None),
+        shuffle=cfg.dataset.get('shuffle', False),
+        predownload=cfg.dataset.get('predownload', 100_000),
+        keep_zip=cfg.dataset.get('keep_zip', False),
+        download_retry=cfg.dataset.get('download_retry', 2),
+        download_timeout=cfg.dataset.get('download_timeout', 60),
+        validate_hash=cfg.dataset.get('validate_hash', None),
+        shuffle_seed=cfg.dataset.get('shuffle_seed', None),
+        num_canonical_nodes=cfg.dataset.get('num_canonical_nodes', None),
+        batch_size=device_batch_size)
 
     collate_fn = MixtureOfDenoisersCollator(
         tokenizer=dataset.tokenizer,
@@ -440,10 +449,10 @@ def build_c4_dataloader(cfg: Mapping[str, Any], device_batch_size: int):
         batch_size=device_batch_size,
         drop_last=cfg.drop_last,
         num_workers=cfg.num_workers,
-        pin_memory=cfg.pin_memory,
-        prefetch_factor=cfg.prefetch_factor,
-        persistent_workers=cfg.persistent_workers,
-        timeout=cfg.timeout,
+        pin_memory=cfg.get('pin_memory', True),
+        prefetch_factor=cfg.get('prefetch_factor', 2),
+        persistent_workers=cfg.get('persistent_workers', False),
+        timeout=cfg.get('timeout', 0),
     )
 
 # Helpful to test if your dataloader is working locally
@@ -457,32 +466,24 @@ if __name__ == '__main__':
     print (f'Reading val split from {remote} -> {local}')
 
     cfg = {
-        'name': 'c4',
+        'name': 'text_denoising',
         'dataset': {
-            'remote': remote,
             'local': local,
+            'remote': remote,
             'split': 'val',
-            'shuffle': True,
-            'prefetch': 1000,
+            'shuffle': False,
             'tokenizer_name': 't5-base',
             'max_seq_len': 128,
             'group_method': 'concat',
-        },
-        'mixture_of_denoisers': {
-            'span_mean_lengths_and_ratios': [[3, .15], [12, .15]],
-            'sequence_mask_ratios': 0.25,
+            'keep_zip': True,  # in case we need compressed files after testing
         },
         'drop_last': False,
-        'num_workers': 0, #4,
-        'pin_memory': True,
-        'prefetch_factor': 2,
-        'persistent_workers': False, #True,
-        'timeout': 0, #30,
+        'num_workers': 4,
     }
     cfg = om.create(cfg)
     device_batch_size = 2
 
-    loader = build_c4_dataloader(cfg, device_batch_size)
+    loader = build_text_denoising_dataloader(cfg, device_batch_size)
     tokenizer = loader.dataset.tokenizer
     for batch_ix, batch in enumerate(islice(loader, 5)):
         print('\n')

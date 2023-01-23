@@ -6,7 +6,7 @@ from transformers import PreTrainedModel
 
 from composer import Callback, Logger, State
 from composer.utils import dist
-from src.data_c4 import MixtureOfDenoisersCollator
+from src.data_denoising import MixtureOfDenoisersCollator
 from src import utils
 
 from typing import Any, Dict, List, Optional
