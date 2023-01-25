@@ -59,10 +59,10 @@ def create_hf_prefix_lm(pretrained_model_name: str = 'gpt2',
         model = transformers.AutoModelForCausalLM.from_config(config)
 
     # Convert the Causal LM into a Prefix LM via our custom, lightweight wrapper
-    model = utils.convert_gpt_causal_lm_to_prefix_lm(model)
+    model = utils.convert_hf_causal_lm_to_prefix_lm(model)
 
     # Expand the embeddings/vocab size to match the tokenizer (which has possibly just had new tokens added above)
-    if model.config.vocab_size < new_vocab_size:
+    if model.config.vocab_size != new_vocab_size:
         model.resize_token_embeddings(new_num_tokens=new_vocab_size)
 
     if gradient_checkpointing:
