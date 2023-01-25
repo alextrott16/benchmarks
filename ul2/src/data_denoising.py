@@ -294,7 +294,10 @@ class MixtureOfDenoisersCollator:
         length = sum(example['attention_mask'])
         if length > self.max_seq_length:
             length = self.max_seq_length
-        tokens = example['input_ids'][:length]
+        if self.tokenizer.padding_side == 'left':
+            tokens = example['input_ids'][-length:]
+        else:
+            tokens = example['input_ids'][:length]
 
         # Figure out if there are any prefix tokens to handle
         if prefix is not None:
@@ -349,7 +352,7 @@ class MixtureOfDenoisersCollator:
         example['attention_mask'] = torch.zeros_like(example['input_ids'])
         example['decoder_attention_mask'] = torch.zeros_like(example['labels'])
 
-        # Fill in with the processed results
+        # Fill in with the processed results (Note: EncDec format will be right-padded)
         example['input_ids'][:len(tokens_inputs)] = tokens_inputs
         example['labels'][:len(tokens_labels)] = tokens_labels
         example['attention_mask'][:len(tokens_inputs)] = 1
@@ -372,12 +375,20 @@ class MixtureOfDenoisersCollator:
         tokens_concat = torch.concat([tokens_inputs, tokens_labels], dim=0)
 
         # Fill in with the processed results
-        example['input_ids'][:n_concat] = tokens_concat
-        # (Here `labels` copies `input_ids` but with -100 at non-loss-generating tokens. `labels` will be shifted in the model code when computing loss.)
-        example['labels'][:n_concat] = tokens_concat
-        example['labels'][:n_input] = -100
-        example['attention_mask'][:n_concat] = 1
-        example['bidirectional_mask'][:n_input] = 1
+        if self.tokenizer.padding_side == 'left': 
+            example['input_ids'][-n_concat:] = tokens_concat
+            # (Here `labels` copies `input_ids` but with -100 at non-loss-generating tokens. `labels` will be shifted in the model code when computing loss.)
+            example['labels'][-n_concat:] = tokens_concat
+            example['labels'][-n_concat:-n_label] = -100
+            example['attention_mask'][-n_concat:] = 1
+            example['bidirectional_mask'][-n_concat:-n_label] = 1
+        else:
+            example['input_ids'][:n_concat] = tokens_concat
+            # (Here `labels` copies `input_ids` but with -100 at non-loss-generating tokens. `labels` will be shifted in the model code when computing loss.)
+            example['labels'][:n_concat] = tokens_concat
+            example['labels'][:n_input] = -100
+            example['attention_mask'][:n_concat] = 1
+            example['bidirectional_mask'][:n_input] = 1
         return example
 
     def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
@@ -394,12 +405,21 @@ class MixtureOfDenoisersCollator:
         keep_tokens = torch.sum(n_examples_per_length > 0)
         keep_tokens = int(multiple_of * torch.ceil(keep_tokens / multiple_of))
 
-        batch['input_ids'] = batch['input_ids'][:, :keep_tokens]
-        batch['attention_mask'] = batch['attention_mask'][:, :keep_tokens]
+        # Note: EncDec formatting will always produce a right-padded batch
+        if self.tokenizer.padding_side == 'left' and self.decoder_only_format:
+            batch['input_ids'] = batch['input_ids'][:, -keep_tokens:]
+            batch['attention_mask'] = batch['attention_mask'][:, -keep_tokens:]
+        else:
+            batch['input_ids'] = batch['input_ids'][:, :keep_tokens]
+            batch['attention_mask'] = batch['attention_mask'][:, :keep_tokens]
 
         if self.decoder_only_format:
-            batch['labels'] = batch['labels'][:, :keep_tokens]
-            batch['bidirectional_mask'] = batch['bidirectional_mask'][:, :keep_tokens]
+            if self.tokenizer.padding_side == 'left':
+                batch['labels'] = batch['labels'][:, -keep_tokens:]
+                batch['bidirectional_mask'] = batch['bidirectional_mask'][:, -keep_tokens:]
+            else:
+                batch['labels'] = batch['labels'][:, :keep_tokens]
+                batch['bidirectional_mask'] = batch['bidirectional_mask'][:, :keep_tokens]
         
         else:
             # Truncate portions of the decoder inputs that are purely padding
